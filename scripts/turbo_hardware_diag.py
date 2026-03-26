@@ -182,6 +182,7 @@ class BackgroundMonitor(threading.Thread):
         super().__init__(daemon=True)
         self._csv_path = csv_path
         self._stop_event = threading.Event()
+        self._lock = threading.Lock()
         self._sample_count = 0
         self._samples: list[dict] = []
 
@@ -197,8 +198,9 @@ class BackgroundMonitor(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 sample = self._poll()
-                self._samples.append(sample)
-                self._sample_count += 1
+                with self._lock:
+                    self._samples.append(sample)
+                    self._sample_count += 1
                 with open(self._csv_path, "a", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
                     writer.writerow([
@@ -207,8 +209,10 @@ class BackgroundMonitor(threading.Thread):
                         sample["gpu_temp_c"], sample["cpu_speed_limit"],
                         sample["gpu_mem_used_mb"], sample["gpu_util_pct"],
                     ])
-            except Exception:
-                pass  # Never crash the monitor thread
+            except Exception as e:
+                # Don't crash monitor, but track failures
+                with self._lock:
+                    self._samples.append({"error": str(e), "timestamp": _utc_now()})
             self._stop_event.wait(MONITOR_POLL_INTERVAL)
 
     def stop(self) -> None:
@@ -217,11 +221,13 @@ class BackgroundMonitor(threading.Thread):
 
     @property
     def sample_count(self) -> int:
-        return self._sample_count
+        with self._lock:
+            return self._sample_count
 
     @property
     def samples(self) -> list[dict]:
-        return list(self._samples)
+        with self._lock:
+            return list(self._samples)
 
     @property
     def csv_path(self) -> str:
@@ -2143,13 +2149,18 @@ def main() -> int:
     anomaly_detector: Optional[AnomalyDetector] = None
 
     # Graceful shutdown on Ctrl+C
+    _interrupted = False
+
     def _signal_handler(signum: int, frame: object) -> None:
-        log.write("")
-        log.write("[WARNING] Interrupted by user (Ctrl+C)")
+        nonlocal _interrupted
+        _interrupted = True
+        try:
+            log.write("")
+            log.write("[WARNING] Interrupted by user (Ctrl+C)")
+        except Exception:
+            pass
         monitor.stop()
         display.stop()
-        log.write(f"[MONITOR] Captured {monitor.sample_count} samples in {monitor.csv_path}")
-        log.close()
         sys.exit(130)
 
     signal.signal(signal.SIGINT, _signal_handler)
@@ -2193,6 +2204,9 @@ def main() -> int:
 
     # Start live display
     display.start()
+
+    hw: dict = {}
+    gpu_init: str = ""
 
     try:
         # Section 1: Hardware inventory
@@ -2250,10 +2264,14 @@ def main() -> int:
         import traceback
         log.write(traceback.format_exc())
     finally:
-        # Stop display + monitor
+        # Stop display + monitor (guard against interrupted state)
         display.stop()
         monitor.stop()
-        log.write(f"[MONITOR] Captured {monitor.sample_count} samples in {monitor.csv_path}")
+        if not _interrupted:
+            try:
+                log.write(f"[MONITOR] Captured {monitor.sample_count} samples in {monitor.csv_path}")
+            except Exception:
+                pass
 
     # Build JSON profile
     profile_json = build_json_profile(hw, model, gpu_init, date_str)
