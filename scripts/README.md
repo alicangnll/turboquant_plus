@@ -24,6 +24,36 @@ That's it. The launcher automatically:
 
 **Requirements:** Python 3.10+, a built llama.cpp with turbo3 support, and a `.gguf` model file.
 
+### Which fork do I build?
+
+| Hardware | Fork | Branch |
+|----------|------|--------|
+| **Apple Silicon (M1-M5)** | [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) | `feature/turboquant-kv-cache` |
+| **NVIDIA (CUDA)** | [spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | `feature/turboquant-kv-cache` |
+| **AMD (ROCm)** | spiritbuun's fork (has RDNA `v_dot2` path) | `feature/turboquant-kv-cache` |
+
+```bash
+# Apple Silicon
+git clone https://github.com/TheTom/llama-cpp-turboquant.git
+cd llama-cpp-turboquant && git checkout feature/turboquant-kv-cache
+cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+# NVIDIA CUDA
+git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git
+cd llama-cpp-turboquant-cuda && git checkout feature/turboquant-kv-cache
+cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+# AMD ROCm
+git clone https://github.com/spiritbuun/llama-cpp-turboquant-cuda.git
+cd llama-cpp-turboquant-cuda && git checkout feature/turboquant-kv-cache
+cmake -B build -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+**Important:** Flash attention must be enabled. Add `-fa on` (server) or `-fa 1` (bench/CLI) to all commands. Without it, turbo3 will silently fail on pre-M5 hardware.
+
 ## How It Runs
 
 ```
