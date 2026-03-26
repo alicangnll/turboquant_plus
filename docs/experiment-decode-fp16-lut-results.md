@@ -80,3 +80,27 @@ Precomputed `cn[8] = {centroid[i]*norm}` into local float array in non-vec dequa
 ## Recommendation
 
 **Main branch (half LUT + float norm broadcast) is optimal.** 9 experiments tested, 2 merged (#1 fp16 LUT, #2 float norm broadcast). The remaining 28% decode gap at 48K is irreducible within the current dequant function interface. Further improvement requires fused compressed attention (custom FA kernel).
+
+## Experiments 10-11 (Additional Attempts)
+
+### Experiment 10: Packed uint4 Register Centroids
+Pack 8 half centroids into a uint4 (16 bytes, register-resident). Extract via `as_type<half2>(uint)[idx & 1]`.
+
+| | Short | 8K | vs main |
+|---|---|---|---|
+| Main | 78.4 | 68.3 | baseline |
+| Packed uint4 | 74.3 | 64.3 | **-5.5% — DEAD** |
+
+The `as_type` extraction + uint4 data-dependent indexing is worse than constant half array. **Dead end.**
+
+### Experiment 11: Fused FA Turbo3 Path (Post-Dot Norm)
+Specialized `is_same<kd4_t, block_turbo3_0>` path in flash attention vec inner loop. Inlines the dequant, applies norm AFTER dot product instead of to each centroid element.
+
+| | Short | 8K | vs main |
+|---|---|---|---|
+| Main | 78.4 | 68.3 | baseline |
+| Fused FA | 78.4 | 68.9 | **+0% / +0.9% — MARGINAL** |
+
+Codex predicted this: `float4 * scalar` norm is already 1 instruction. The compiler optimizes the dequant → dot pipeline. No gain from manual fusion.
+
+**Both dead ends. 11 experiments total, 2 merged, 9 dead.**
