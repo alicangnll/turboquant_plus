@@ -104,3 +104,16 @@ Specialized `is_same<kd4_t, block_turbo3_0>` path in flash attention vec inner l
 Codex predicted this: `float4 * scalar` norm is already 1 instruction. The compiler optimizes the dequant → dot pipeline. No gain from manual fusion.
 
 **Both dead ends. 11 experiments total, 2 merged, 9 dead.**
+
+## Branch Status: ABANDONED
+
+11 decode speed experiments exhausted. 2 merged to main (#1 fp16 LUT, #2 float norm broadcast). 9 dead ends documented above.
+
+**Current main branch decode performance (final):**
+- Short context: 0.92x q8_0
+- 8K context: 0.88x q8_0
+- 48K context (Mario PDF): 0.72x q8_0
+
+The remaining gap is the irreducible cost of data-dependent 8-entry centroid table lookup on Apple GPU constant cache. Closing it requires either a fundamentally different block format or a completely custom flash attention kernel architecture. Neither is achievable through dequant function optimization alone.
+
+This branch is abandoned. The investigation data is preserved for future reference.
