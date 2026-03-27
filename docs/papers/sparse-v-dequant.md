@@ -221,6 +221,19 @@ Sparse V dequantization is not specific to TurboQuant. It applies to any quantiz
 
 This includes NVFP4, KIVI, CacheQuant, and other KV cache quantization methods. The 3-line implementation is kernel-level and requires no model changes, no retraining, and no calibration data.
 
+### 7.1 Empirical Validation on q8\_0
+
+To validate generality beyond TurboQuant, we tested sparse V on llama.cpp's standard q8\_0 KV cache (8-bit quantization, 2× compression) using the same model and hardware. A `TURBO_SPARSE_V=0` override was added to force-disable the optimization for A/B comparison:
+
+| Test | q8\_0 + sparse V | q8\_0 (no sparse V) | Improvement |
+|------|-----------------|---------------------|-------------|
+| Decode (short, tg128) | 84.7 tok/s | 80.7 tok/s | **+5.0%** |
+| Blended (pp32768+tg128) | 1145.2 tok/s | 1096.7 tok/s | **+4.4%** |
+
+Sparse V provides a **5% decode speedup on q8\_0** — a cache format with far cheaper per-position dequantization than turbo3. The benefit is smaller than turbo3's +22.8% at 32K because q8\_0's dequant is lightweight (simple scale-and-add vs centroid LUT + WHT rotation), but the attention sparsity still allows meaningful work to be skipped.
+
+This confirms that sparse V is a general flash attention optimization, not a TurboQuant-specific trick. Any quantized cache format — including NVFP4, q4\_0, and future formats — should benefit. Raw benchmark logs: [`threshold-ablation-logs/q8_0_sparse_v_ablation_m5.txt`](../threshold-ablation-logs/q8_0_sparse_v_ablation_m5.txt).
+
 ---
 
 ## 8. Limitations and Future Work
