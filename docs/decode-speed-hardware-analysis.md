@@ -271,26 +271,83 @@ This explains the ranking pattern: approaches that maintain per-element `read �
 
 **The remaining 38% gap cannot be closed by rearranging the same reads and ALU.** The only path forward is reducing the total constant read count per element below 4, which requires changing the block format or computation structure.
 
+## Extended Experiments (approaches 16h + 19, 2026-03-28 evening)
+
+Clean benchmarks (no DINOv2 contention). Note: absolute tok/s numbers differ from earlier runs due to DINOv2 GPU contention during those measurements. Relative rankings are consistent.
+
+### Qwen2.5-7B-Instruct-Q4_K_M (8K context, p=8192 tg128)
+
+| # | Approach | Env Var | turbo3 t/s | turbo4 t/s | q8_0 t/s | Key finding |
+|---|----------|---------|-----------|-----------|---------|-------------|
+| — | Baseline (4-mag LUT) | — | 25.88 | 27.59 | 33.69 | turbo4 > turbo3 by 6.6% |
+| 16h | Half register LUT (`half cn[8]`) | TURBO_HALF_REG_LUT=1 | 25.55 (-1.3%) | 27.26 (-1.2%) | — | Still spills on Apple8. Noise. |
+| 19 | Threadgroup centroid cache | TURBO_TG_CENTROID=1 | 25.96 (+0.3%) | 27.42 (-0.6%) | — | Flat. Threadgroup read ≈ constant read. |
+
+### Qwen2.5-1.5B-Instruct-Q4_K_M (8K context, p=8192 tg128)
+
+| # | Approach | Env Var | turbo3 t/s | turbo4 t/s | q8_0 t/s | Key finding |
+|---|----------|---------|-----------|-----------|---------|-------------|
+| — | Baseline (4-mag LUT) | — | 51.84 | 58.74 | 113.02 | Gap worse on 1.5B (attention dominates) |
+| 16h | Half register LUT | TURBO_HALF_REG_LUT=1 | 50.67 (-2.3%) | 57.76 (-1.7%) | — | Consistent regression across models |
+| 19 | Threadgroup centroid cache | TURBO_TG_CENTROID=1 | 52.19 (+0.7%) | 57.98 (-1.3%) | — | Flat |
+
+### Prompt processing (pp8192, for reference)
+
+| Model | turbo3 | turbo4 | q8_0 |
+|-------|--------|--------|------|
+| 7B | 241.26 | 240.00 | 254.74 |
+| 1.5B | 816.13 | 807.03 | 896.42 |
+
+### Key takeaways from approaches 16h + 19
+
+1. **Both approaches are noise on M2 Pro.** Half Reg LUT is consistently -1 to -2% (regression). TG Centroid is flat (within variance).
+
+2. **turbo4 > turbo3 on M2 Pro** by 6-13% on decode. Holds across both model sizes. 16 centroids (turbo4) is faster than 8 (turbo3) — possibly better ILP with 4-bit indices.
+
+3. **The gap to q8_0 grows with smaller models**: 30% on 7B, 118% on 1.5B. Smaller models make attention a larger fraction of decode, making the dequant overhead more visible.
+
+4. **The centroid LUT is NOT the sole bottleneck.** Moving centroids to half-precision registers or threadgroup memory doesn't help. The bottleneck is broader — likely the full WHT transform + extraction pipeline, not just the final centroid lookup.
+
+### Revised theory (2026-03-28)
+
+The original theory was "constant memory LUT divergence is the bottleneck." After testing 4 approaches targeting the centroid LUT specifically (#15 SMEM pre-dequant, #16q Q·centroid precompute, #16h half reg LUT, #19 TG centroid), NONE improved decode speed. The 4-mag LUT improvement from earlier was real (+38%), but it was optimizing the full dequant pipeline (fewer reads + XOR sign trick), not just the centroid lookup.
+
+The remaining gap is structural: turbo3/4 dequant requires WHT extraction + centroid lookup + norm multiply per element, while q8_0 is a simple `int8 * scale`. No rearrangement of the same operations will close this gap.
+
+### Updated tally: 18 approaches tested (16h and 19 added)
+
+| Rank | Approach | M2 8K | vs Ceiling | Category |
+|------|----------|-------|-----------|----------|
+| 1 | 4-mag LUT | 15.1 | 62% | 4 constant reads |
+| 2 | simd_shuffle | 14.7 | 60% | Cross-lane transfer |
+| 3 | Batched extract (8-LUT) | 13.7 | 56% | 8 constant reads |
+| 4 | Inline FA block | 13.5 | 55% | Inlined dequant |
+| 5 | Deferred norm | 12.9 | 53% | Loses ILP |
+| 6 | 2-pair half2 | 12.0 | 49% | 2 reads + ternary |
+| 7 | Select chain | 11.9 | 49% | Pure branches |
+| 8 | Bit-arithmetic | 11.6 | 47% | Pure ALU |
+| 9 | FMA branchless | 11.4 | 47% | fma() chain |
+| 10 | Main (8-LUT) | 10.95 | 45% | Baseline |
+| 11 | Named-reg ternary | 10.3 | 42% | Registers + branches |
+| 12 | Non-vec FA | 10.2 | 42% | Wrong kernel |
+| 13 | SMEM pre-dequant | 10.17 | 41% | Threadgroup cache (ILP loss) |
+| 14 | Q·centroid precompute | 10.10 | 41% | select() register LUT |
+| 15 | Fused block dot | 8.1 | 33% | 64 comparisons |
+| 16h | Half register LUT | ~noise | ~62% | half cn[8] — still spills |
+| 19 | TG centroid cache | ~noise | ~62% | Threadgroup centroid table |
+| — | Ceiling (no dequant) | 24.5 | 100% | Zero overhead |
+
 ## Untested Approaches (Hitlist)
 
-These are approaches that have NOT been tried yet. Work through them in order.
+These are approaches that have NOT been tried yet. Given the revised theory (centroid LUT is not the sole bottleneck), approaches targeting the centroid specifically are deprioritized.
 
 | # | Approach | Category | Rationale | Expected Impact | Status |
 |---|----------|----------|-----------|----------------|--------|
-| 16 | `half cn[8]` register LUT | Register LUT | 16 bytes instead of 32 float. May not spill on Apple8's smaller register file. If it fits, eliminates constant memory entirely. | High if it fits | NOT TESTED |
-| 17 | Device-memory centroid×norm | Block format change | Store 8 precomputed `centroid[i] × norm` per 128-element group in device memory. Sequential reads (no divergence). Adds 16 bytes per block (3.5→4.5 bits/val, still 1.78x compression). Preserves ILP (still per-element read → multiply pattern). | High — eliminates constant memory while preserving ILP | NOT TESTED |
-| 18 | Byte-indexed 256-entry LUT | LUT restructure | Pack all 8 centroid×sign combinations into a 256-byte lookup indexed by raw byte value. 4x fewer lookups (1 per byte instead of 1 per element). Trades constant memory bandwidth for fewer accesses. | Medium — fewer reads but larger LUT may thrash cache worse | NOT TESTED |
-| 19 | Threadgroup centroid cache (real Metal, not CPU fallback) | Threadgroup memory | Previous threadgroup test was during CPU fallback bug. Retest: load cn[8] into threadgroup once per threadgroup, all threads read from SMEM. Unlike SMEM pre-dequant (which cached dequanted VALUES), this caches the CENTROID TABLE. Much smaller (32 bytes), no per-element stores. | Medium — depends on threadgroup read latency vs constant read | NOT TESTED |
-| 20 | 2-bit direct encode (no LUT) | Format change | Redesign turbo3 to use 2-bit uniform quantization per element (scale + offset per block). No centroid LUT at all. Reconstruction = `scale * idx + offset`. Same bits, zero divergent reads. Quality may suffer vs PolarQuant centroids. | Unknown — eliminates the problem entirely but may hurt quality | NOT TESTED |
+| 17 | Device-memory centroid×norm | Block format change | Store 8 precomputed `centroid[i] × norm` per 128-element group in device memory. Sequential reads (no divergence). Adds 16 bytes per block (3.5→4.5 bits/val, still 1.78x compression). Preserves ILP (still per-element read → multiply pattern). | **Deprioritized** — centroid LUT not the bottleneck per #16h/#19 results | NOT TESTED |
+| 18 | Byte-indexed 256-entry LUT | LUT restructure | Pack all 8 centroid×sign combinations into a 256-byte lookup indexed by raw byte value. 4x fewer lookups (1 per byte instead of 1 per element). Trades constant memory bandwidth for fewer accesses. | **Deprioritized** — same reason | NOT TESTED |
+| 20 | 2-bit direct encode (no LUT) | Format change | Redesign turbo3 to use 2-bit uniform quantization per element (scale + offset per block). No centroid LUT at all. Reconstruction = `scale * idx + offset`. Same bits, zero divergent reads. Quality may suffer vs PolarQuant centroids. | **Still interesting** — eliminates entire dequant pipeline, not just centroid | NOT TESTED |
 | 21 | Hybrid 4-mag + simd_shuffle | Combined | Use 4-mag for magnitude (4 constant reads), then simd_shuffle for sign propagation instead of XOR. May reduce 1-2 ALU ops. | Low — simd_shuffle was only -2.6% vs 4-mag alone | NOT TESTED |
 | 22 | Async device copy to threadgroup | Pipeline | Use Metal's async copy to prefetch next tile of KV blocks into threadgroup while computing current tile. Hides device memory latency. | Medium — requires restructuring tile loop | NOT TESTED |
-
-### Priority order
-1. **#16 half cn[8]** — fastest to test, highest upside if registers don't spill
-2. **#17 Device-memory centroid×norm** — most architecturally sound, eliminates root cause
-3. **#19 Threadgroup centroid cache** — quick test, small change
-4. **#18 Byte-indexed 256-entry LUT** — worth a shot
-5. **#20-22** — only if above fail
 
 ### Success criteria
 - Any approach that gets M2 8K decode from 15.1 to 18+ tok/s is a win
