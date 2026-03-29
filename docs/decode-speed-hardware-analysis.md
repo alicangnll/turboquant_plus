@@ -455,13 +455,152 @@ The bottleneck IS:
 - These two costs are inherent to the turbo format and cannot be optimized away without changing the format itself
 - For small models where attention dominates, SMEM can squeeze out ~4% by trading constant reads for threadgroup reads
 
-### Remaining untested approaches (low priority)
+### Remaining dequant-level approaches (low priority, likely moot)
 
 | # | Approach | Category | Expected Impact | Status |
 |---|----------|----------|----------------|--------|
 | 17 | Device-memory centroid×norm | Block format change | Moot — centroid reads are free | NOT TESTED |
 | 18 | Byte-indexed 256-entry LUT | LUT restructure | Moot — same reason | NOT TESTED |
 | 21 | Hybrid 4-mag + simd_shuffle | Combined | Low — simd_shuffle was only -2.6% standalone | NOT TESTED |
+
+---
+
+## Phase 2: Kernel/Format/Pipeline-Level Optimization (2026-03-28 night)
+
+Phase 1 (approaches 1-22) exhausted dequant-level optimization: rearranging reads, ALU, barriers, and storage within the existing FA vec kernel template. The 4-mag LUT is the dequant ceiling.
+
+Phase 2 attacks at a higher level: different kernel shapes, different data layouts, and runtime dispatch. These are more invasive but target the actual structural gap.
+
+### Experiment #23: Turbo-Only Non-Vec Decode Kernel
+
+**Category:** Kernel path
+
+**Hypothesis:** The current FA vec kernel (`kernel_flash_attn_ext_vec`) is designed for general-purpose quantized attention. A turbo-specific decode kernel built from scratch for single-token long-context generation could avoid overhead from the generic template.
+
+**Why this might work:**
+- The vec kernel's template machinery (generic dequant function pointers, parameterized NL/NSG/NE) adds register pressure and instruction cache footprint. A hand-specialized turbo3 dk128/dv128 kernel can hardcode everything.
+- Earlier test of non-vec FA (approach #10, 10.2 t/s) used the EXISTING generic non-vec kernel, which is optimized for multi-token prefill, not single-token decode. A purpose-built decode kernel is a different thing entirely.
+- Older Apple GPUs (Apple7/8) reward brutally specific kernels over generic templates.
+
+**Implementation plan:**
+1. Create a new kernel function `kernel_flash_attn_ext_turbo3_decode_dk128` in `ggml-metal.metal`
+2. Hardcode: dk=128, dv=128, single-token (ne01=1), turbo3 block format
+3. Inline the 4-mag dequant directly (no function pointer indirection)
+4. Optimize the Q*K^T loop for the exact turbo3 block layout: read 14 bytes (2 bytes norm + 8 bytes qs + 4 bytes signs), extract inline, dot product inline
+5. Optimize the V accumulation separately (can use different strategy than K)
+6. Wire through `ggml-metal-ops.cpp` dispatch: use this kernel when `type_k == TURBO3_0 && ne01 == 1 && dk == 128`
+7. Gate behind `TURBO_SPECIALIZED_DECODE=1` env var
+
+**Key code touchpoints:**
+- `ggml/src/ggml-metal/ggml-metal.metal` — new kernel function + instantiation
+- `ggml/src/ggml-metal/ggml-metal-ops.cpp` — dispatch logic to select this kernel
+- `ggml/src/ggml-metal/ggml-metal-device.m` — env var wiring
+
+**Success criteria:**
+- Any improvement over 25.88 t/s (turbo3 7B 8K baseline) is a win
+- 30+ t/s would close the gap to q8_0 (33.69) significantly
+- Regression at short context is acceptable if long context improves
+
+**Risk:** High effort, uncertain payoff. The template overhead might not be the bottleneck.
+
+---
+
+### Experiment #24: Apple7/8-Specific Alternate Block Format
+
+**Category:** Data layout
+
+**Hypothesis:** The turbo3 block format was designed for the algorithm, not for Apple8 GPU memory access patterns. A second on-device KV format optimized for how the M2 FA vec kernel actually consumes data could reduce memory stalls.
+
+**Why this might work:**
+- Current turbo3 block layout: `[norm(2B)] [qs(8B)] [signs(4B)]` = 14 bytes per 32 elements. The kernel reads these in 3 separate device memory accesses at different offsets within the block.
+- If we interleave the data by 4-element consumption order (matching the vec kernel's `DK4` stride), each fetch brings exactly what the next compute step needs — no wasted bandwidth, better prefetch prediction.
+- The profiling data shows "reading bytes" costs ~10% of ceiling on both M2 and M5. Reducing this by even half could be meaningful when combined with other improvements.
+
+**Implementation plan:**
+1. Design an alternate block layout `block_turbo3_m2` where data is arranged by the vec kernel's consumption order:
+   - For each 4-element group: `[norm_chunk] [qs_chunk] [sign_bits]` contiguous
+   - Or: per-8-element granule matching SIMD consumption width
+2. Add a SET_ROWS variant that packs into the new layout during KV cache write
+3. Add a `dequantize_turbo3_m2_t4` that reads the new layout
+4. Wire as a new kernel instantiation
+5. Gate behind `TURBO_M2_FORMAT=1` env var
+
+**Key code touchpoints:**
+- `ggml/src/ggml-common.h` — new block struct definition
+- `ggml/src/ggml-metal/ggml-metal.metal` — new dequant function + kernel instantiation
+- `ggml/src/ggml-metal/ggml-metal-ops.cpp` — SET_ROWS + dispatch for new type
+- `ggml/src/ggml-metal/ggml-metal-device.m` — env var
+
+**Success criteria:**
+- Measurable improvement in the "read bytes" profiling mode (mode 4 → mode 3 gap)
+- Any decode speed improvement over 4-mag baseline
+- Must not regress PPL (same data, different packing)
+
+**Risk:** Medium effort, medium payoff. The 10% "read bytes" cost is real but may already be well-hidden by the dequant ALU.
+
+---
+
+### Experiment #25: Dual Runtime Dispatch by Chip Family + Context Depth
+
+**Category:** Pipeline
+
+**Hypothesis:** No single kernel configuration is optimal across all context depths. A runtime dispatch that selects different strategies based on context depth could win overall.
+
+**Why this might work:**
+- Already proven: 4-mag helps at 16K on M5 (+2.4%) but hurts at 32K (-7.3%). Crossover at ~20K.
+- turbo3 no-dequant is 12% faster than q8_0 at short context (bandwidth advantage) but 38% slower at 8K (dequant overhead dominates).
+- The vec kernel has `NL` parameter controlling simdgroup work distribution. Different NL values may be optimal at different context depths.
+
+**Implementation plan:**
+1. Compile both 4-mag and 8-LUT FA kernel instantiations for turbo3/turbo4 on pre-M5
+2. In `ggml-metal-ops.cpp`, add context-depth dispatch:
+   - Pre-M5 + context < threshold: one kernel config
+   - Pre-M5 + context ≥ threshold: different kernel config
+3. Profile to find the optimal crossover point
+4. Also test different `NL` values (currently NL=1 for dk128) at different context depths
+5. Gate behind `TURBO_CONTEXT_DISPATCH=1` env var
+
+**Key code touchpoints:**
+- `ggml/src/ggml-metal/ggml-metal-ops.cpp` — dispatch logic (primary)
+- `ggml/src/ggml-metal/ggml-metal.metal` — may need additional kernel instantiations with different NL
+- `ggml/src/ggml-metal/ggml-metal-device.m` — env var
+
+**Success criteria:**
+- Better decode across the full context range (short through 32K) than any single configuration
+- Minimal code complexity (dispatch is a few lines in ops.cpp)
+
+**Risk:** Low effort, medium payoff. The gains from 4-mag vs 8-LUT switching were small on M5 (+2.4% at one depth). On M2 where the gap is larger, the payoff might be bigger.
+
+---
+
+### Priority order for Phase 2
+
+1. **#23 Turbo-only non-vec decode kernel** — highest potential, directly attacks the structural gap. Start here.
+2. **#25 Dual runtime dispatch** — low effort, can run in parallel with #23 as a quick profiling exercise.
+3. **#24 Alternate block format** — medium effort, save for after #23 results inform whether the bottleneck is compute or memory layout.
+
+### Additional ideas from full brainstorm (backlog, not prioritized)
+
+These are logged for future reference. Each could become a numbered experiment if the top 3 don't pan out.
+
+**Kernel-path:**
+- Lane-specialized dequant microkernels (hardcode per dk/dv pair)
+- Split K/V strategies (different kernel for score vs accumulation)
+- Metadata-first K path (stage norm+bits, defer centroid materialization)
+- Two-token decode kernel (microbatch=2 for better utilization)
+- Persistent-thread decode kernel (keep threadgroups resident across tiles)
+
+**Computation:**
+- Norm hoisting at higher granularity (fused partial accumulation)
+- Affine centroid approximation (approximate arithmetic + correction term)
+- Top-2 magnitude encode (cheap primary path + rare correction)
+- Softmax-side pruning before full V work (conservative early exit)
+- Mixed-precision accumulation schedule (audit half/float widen points)
+
+**Instrumentation:**
+- Per-section timing inside Metal kernel (finer than current profiling modes)
+- Dimension-specific perf matrix (128 vs 192 vs 256 on Apple8)
+- Instruction-cache pressure audit (code-size-reduced kernel variants)
 
 ## M5 Max Long-Context Discovery (2026-03-27)
 
