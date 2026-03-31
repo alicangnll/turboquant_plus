@@ -321,3 +321,15 @@ buun's CUDA data confirms:
 - **Arclabs001/YATQ** — Quantified QJL variance explosion through softmax
 - **OpenAI Codex** — Caught the out-of-bounds struct bug
 - **Sean Rasch** — turbo4 Python test coverage (PR #41)
+
+---
+
+## Addendum: Independent Validation (2026-03-31)
+
+The finding that QJL hurts quality for attention workloads has been independently confirmed:
+
+- **@Aaryan-Kapoor** (2026-03-26): "Dropped QJL (Algorithm 2). I independently found the same thing." Converged on all-bits-to-Lloyd-Max centroids independently.
+- **@scos-lab** (2026-03-28): Measured PPL degradation quantitatively: "Paper (Prod keys) +300% vs MSE (both) +7.6% on GPT-2. QJL adds variance that softmax amplifies. Low variance (MSE) beats unbiasedness (Prod)."
+- **@AmesianX** — Blackwell DGX Spark (2026-03-29): Initial QJL implementation hurt quality. Root cause identified: correlation between MSE WHT and QJL SRHT rotations. Fixed by using independent sign patterns. First working QJL via independent random seeds.
+- **@Arclabs001/YATQ** (2026-03-29): Independently confirmed: "WHT + QJL + MSE is the solution!" using separate random seeds for MSE vs QJL rotations. Quantified QJL variance explosion through softmax.
+- **@elusznik** — upstream PR #21089 (2026-03-27): Implemented CPU TurboQuant without QJL, validating the PolarQuant-only approach for the upstream llama.cpp landing.

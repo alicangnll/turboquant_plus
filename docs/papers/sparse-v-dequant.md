@@ -440,6 +440,21 @@ To reproduce: build with `TURBO_SPARSE_V=1` environment variable and run `llama-
 - **@ekryski**: GPT-OSS 20B testing on M1 Max with turbo4
 - The TurboQuant community for extensive cross-hardware validation
 
+## Addendum: Independent Validation (2026-03-31)
+
+The core finding that V compression is free (zero quality impact when K precision is maintained) has been independently confirmed:
+
+- **@sztlink (Felipe Sztutman)** — Qwen3-4B, RTX 4090, tonbistudio/turboquant-pytorch (2026-03-31): fp16-K + 2bit-V gives 1.000 cosine similarity and 100% top-1 match at 8K context. V quantization has zero observable effect on attention scores when K is uncompressed.
+- **@HyperionMS2040** — 10-model CUDA sweep, RTX 3090 (2026-03-31): q8_0/turbo4 is "lossless across all tested architectures" (4 architectures validated). Asymmetric q8_0-K + turbo-V rescues models that fail on symmetric turbo.
+- **@scos-lab** — GPT-2 validation (2026-03-28): 89% storage reduction, 9x compression, zero PPL impact. Independently measured K/V norm disparity ratios from 4x to 182x across models, proving quantization error scales with norm squared.
+- **@Madreag** — RTX 5090, Qwen3.5-27B (2026-03-28): turbo3 K+V passing math, factual, and code gen benchmarks. NIAH 6/6 exact retrieval.
+- **@dusterbloom** — RTX 3090 (2026-03-29): TBQ3 Flash Attention decode faster than q8_0 on 4/5 models (Gemma-3-12B +7.3%, Qwen3.5-35B MoE +4.2%, Nemotron-9B +3.4%).
+- **AMD HIP validation** — RX 9070 XT (2026-03-29): Asymmetric q8_0/turbo4 confirmed at +1.0% PPL. Symmetric catastrophic on same model.
+
+These results span Metal (Apple Silicon), CUDA (RTX 3090, 4090, 5090), and AMD HIP, confirming the finding is hardware and backend independent.
+
+---
+
 ## References
 
 1. TurboQuant: Redefining AI Efficiency with Extreme Compression. Google Research, ICLR 2026.

@@ -363,6 +363,16 @@ Rationale:
 - Boundary width matters on pure-attention models, but not enough to warrant a second tier.
 - The most interesting next step is fixing the boundary selection to use KV layer ordinal instead of raw layer index, which would make Boundary V properly target hybrid architectures.
 
+## Addendum: Independent Validation (2026-03-31)
+
+The boundary layer sensitivity finding has been independently confirmed:
+
+- **@sztlink (Felipe Sztutman)** — Qwen3-4B, RTX 4090, tonbistudio/turboquant-pytorch (2026-03-31): Measured boundary gap scaling with K compression. The gap between boundary layers (first 2 + last 2) and middle layers grows with K compression: -0.001 at 4-bit K (negligible), -0.004 at 3-bit K (noticeable), -0.010 at 2-bit K (significant). Directly validates the Boundary V approach.
+- **@HyperionMS2040** — RTX 3090 (2026-03-31): Qwen3.5-4B validation confirms first layers need protection. Clean asymmetric ladder with no catastrophic failure when K precision is maintained.
+- **@Corianas_** — NanoGPT (2026-03-29): Independent validation of Boundary V on a different codebase entirely.
+
+---
+
 ## Files Changed
 
 - `src/llama-kv-cache.cpp` — added modes 5, 6, 7 to `TURBO_LAYER_ADAPTIVE` env var (15 lines)

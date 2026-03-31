@@ -344,7 +344,27 @@ Kamradt single-needle methodology. 104B decode is slow (~8 t/s), so 16K tests ti
 
 6. **104B NIAH limited.** 16K context timed out due to slow decode (~8 t/s). Not a retrieval failure. Requires longer query timeout for full coverage.
 
-7. **macOS GPU memory fix required for 70B+ at long context.** The `iogpu.wired_limit_mb` sysctl must be set to ~95% of physical RAM. Resets on reboot.
+7. **macOS GPU memory fix required for 70B+ at long context.** The `iogpu.wired_limit_mb` sysctl must be set to ~90% of physical RAM (community testing confirmed >90% risks kernel panics under sustained load). Resets on reboot.
+
+---
+
+## Addendum: Independent Validation (2026-03-31)
+
+The key findings from this stress test have been independently confirmed:
+
+**Asymmetric K/V rescue (Sections 2, 8):**
+- **@HyperionMS2040** — RTX 3090, 10-model CUDA sweep (2026-03-31): q8_0/turbo4 "lossless across all tested architectures." Confirmed model-family-dependent sensitivity: Qwen2.5-7B +3.6% symmetric vs +0.5% on Llama 3.1 8B.
+- **@sztlink** — RTX 4090, Qwen3-4B (2026-03-31): Full asymmetric matrix confirms V compression is completely free (1.000 cosine similarity with fp16-K + 2bit-V). All degradation from K.
+- **AMD HIP** — RX 9070 XT (2026-03-29): Asymmetric confirmed across third GPU vendor.
+
+**turbo3 prefill faster than q8_0 at long context (Sections 3, 8):**
+- **@spiritbuun** — RTX 3090 (2026-03-28): 98.8% of q8_0 prefill speed with dequant-then-MMA path.
+- **@AmesianX** — Blackwell DGX Spark (2026-03-29): turbo decode 63.5 t/s, faster than q8_0 (50.1 t/s) at 8K context.
+- **@dusterbloom** — RTX 3090 (2026-03-29): Decode faster on 4/5 models with TBQ3 Flash Attention.
+- **@HyperionMS2040** — RTX 3090 (2026-03-31): Asymmetric q8_0-K/turbo3-V 14% faster decode than symmetric turbo3/turbo3.
+
+**macOS GPU memory wall (Section 5):**
+- **@treblewoe** (2026-03-31): Confirmed the wall exists. Reported kernel panics at >90% allocation under sustained load (Minimax M2.5 3-bit starting at 100GB). Recommended 90% as safe ceiling. Docs updated accordingly.
 
 ---
 
