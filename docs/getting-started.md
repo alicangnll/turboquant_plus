@@ -13,6 +13,7 @@ Get up and running with TurboQuant+ KV cache compression in under 5 minutes.
 ```bash
 git clone https://github.com/TheTom/llama-cpp-turboquant
 cd llama-cpp-turboquant
+git checkout feature/turboquant-kv-cache
 
 # Apple Silicon (Metal)
 cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
