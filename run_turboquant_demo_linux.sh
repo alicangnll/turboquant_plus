@@ -244,9 +244,9 @@ if [ "$USE_LLMTUNING" -eq 1 ]; then
     echo "==========================================================="
     
     source .venv/bin/activate
-    python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "How can I optimize an LLM on Linux?" -n 300
+    python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
 else
-    eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"How can I optimize an LLM on Linux?\" -n 300"
+    eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
 fi
 
 echo "-----------------------------------------------"

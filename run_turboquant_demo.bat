@@ -179,7 +179,7 @@ if "%USE_LLMTUNING%"=="1" (
     echo ^>^>^> Mode: Memory-Optimized Layer Sharding (AirLLM)
     echo ^>^>^> Benefit: Stable inference for 32B+ models on 16GB RAM
     echo ===========================================================
-    python -m turboquant.streamed_inference -m "%MODEL_FILE%" --model-size "%NGL%" --cache-type-k "%CACHE_TYPE_K%" --cache-type-v "%CACHE_TYPE_V%" -p "How can I optimize an LLM on Windows?" -n 300
+    python -m turboquant.streamed_inference -m "%MODEL_FILE%" --model-size "%NGL%" --cache-type-k "%CACHE_TYPE_K%" --cache-type-v "%CACHE_TYPE_V%" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
 ) else (
     %CMD_RUN% -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
 )
