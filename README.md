@@ -34,6 +34,25 @@ Compresses transformer KV cache **3.8-6.4x** using PolarQuant + Walsh-Hadamard r
 
 Validated end-to-end from 1.5B to **104B** on M5 Max via llama.cpp Metal. **104B at 128K context on a MacBook** with turbo3 (PPL 4.024, 74 GB peak memory).
 
+## 🚀 2026 Engine Updates: Stability & Memory Optimization
+
+The latest TurboQuant+ engine includes significant architectural improvements for stable inference of 32B–500B models on low-RAM Apple Silicon devices:
+
+### 1. Memory Optimization Levels (VRAM & RAM Control)
+You can now choose between three operational modes at startup:
+- **Performance**: Maximum GPU usage, fast inference. Best for 32GB+ RAM.
+- **Balanced**: Optimized for 24-32GB systems. Uses 40% GPU budget.
+- **Ultra-Eco**: Safe for 8-16GB systems. Minimal GPU, Duo-2bit cache, 512 context.
+
+### 2. Hybrid KV Cache (`turbo4` + `turbo2`)
+TurboQuant now leverages independent precision for Key and Value tensors. Keeping **K-cache** at 4-bit (`turbo4`) preserves attention intelligence, while compressing **V-cache** at 2-bit (`turbo2`) drastically reduces wired memory footprint.
+
+### 3. Hardware-Aware NGL Automation
+The engine automatically detects your platform's `recommendedMaxWorkingSetSize` (Metal Budget) and calculates the safest number of GPU layers (`-ngl`) to prevent system freezes and Metal OOM asserts.
+
+### 4. Smart MMAP Strategy
+For models larger than physical RAM (32B, 100B, 500B), the engine uses intelligent memory mapping (mmap) instead of fixed loading. This enables stable operation via **NVMe SSD Swap** when the model size exceeds unified memory.
+
 ## Status: v1 Complete, Speed Optimized, Community-Tested
 
 - 511+ Python tests, 100% code coverage on diagnostics

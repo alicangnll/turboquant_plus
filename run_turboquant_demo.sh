@@ -33,7 +33,24 @@ echo ">>> Compiling C++ engine for Mac (Metal) (this may take a while)..."
 cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 
-# Part 3: Downloading an Example Model
+# Part 3: Memory Optimization Level
+echo ">>> [3/5] Select Memory Optimization Level:"
+echo "1) Performance (High GPU, fast, needs 32GB+ RAM)"
+echo "2) Balanced   (Moderate GPU, 24GB RAM safe)"
+echo "3) Ultra-Eco   (Minimal RAM, stable on 16GB systems)"
+read -p "Your choice (1/2/3) [Default: 2]: " mem_choice
+mem_choice=${mem_choice:-2}
+
+case "$mem_choice" in
+  1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
+  2) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced" ;;
+  3) MEM_BUDGET_PCT=10; MEM_LABEL="Ultra-Eco" ;;
+  *) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced" ;;
+esac
+echo ">>> Memory Mode: $MEM_LABEL (Targeting $MEM_BUDGET_PCT% GPU weight budget)"
+echo ""
+
+# Part 4: Downloading an Example Model
 if [ -n "$1" ]; then
     model_choice="$1"
     echo ">>> [3/4] Model selected via argument: $model_choice"
@@ -98,24 +115,26 @@ echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
 
 if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
     echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
-    # -b 128: Low batch prevents spikes. No --no-mmap means macOS uses NVMe swap for weights.
     EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8"
-    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_K="turbo2"
     CACHE_TYPE_V="turbo2"
-    echo "    Extra parameters (NVMe-based Virtual Memory): $EXTRA_ARGS with turbo4+2"
+    echo "    Extra parameters (Extreme Swap): $EXTRA_ARGS with turbo2+2"
 elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
-    echo ">>> 100B Class Model Detected: Activating maximum stability settings..."
-    EXTRA_ARGS="-c 1024 -b 2048 -ub 512 -t 12"
+    echo ">>> 100B Class Model Detected: Adjusting for $MEM_LABEL mode..."
+    CTX=512; [ "$mem_choice" -eq 1 ] && CTX=1024
+    EXTRA_ARGS="-c $CTX -b 512 -ub 256 -t 12"
     CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo4"
-    echo "    Extra parameters (MMAP-backed weights): $EXTRA_ARGS"
+    if [ "$mem_choice" -eq 3 ]; then CACHE_TYPE_V="turbo2"; else CACHE_TYPE_V="turbo4"; fi
+    echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
-    echo ">>> 32B Class Model Detected: Applying Balanced-Hybrid profile..."
-    # Hybrid Cache: turbo4 for K (attention routing), turbo2 for V (value) = Max RAM save + Quality
-    EXTRA_ARGS="-c 1024 -b 512 -ub 256"
+    echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode..."
+    CTX=512; [ "$mem_choice" -eq 1 ] && CTX=1024
+    EXTRA_ARGS="-c $CTX -b 256 -ub 128"
+    # Even in balanced, use turbo2 for V to save memory
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
-    echo "    Extra parameters (Hybrid KV: turbo4 K / turbo2 V): $EXTRA_ARGS"
+    [ "$mem_choice" -eq 3 ] && CACHE_TYPE_K="turbo2" # Ultra-eco uses 2-bit for both
+    echo "    Extra parameters: $EXTRA_ARGS"
 else
     EXTRA_ARGS="-c 2048"
     CACHE_TYPE_K="turbo4"
@@ -218,9 +237,8 @@ calculate_ngl() {
 
     [ "$weight_budget_mb" -le 0 ] && weight_budget_mb=$(( metal_budget_mb / 3 ))
 
-    # Use 55% of weight budget — leave 45% for OS and memory-mapped page cache
-    # This ensures zero stuttering and prevents OOM during prefill phase.
-    local available_mb=$(( weight_budget_mb * 55 / 100 ))
+    # weight_budget_mb * MEM_BUDGET_PCT / 100 — User selected headroom
+    local available_mb=$(( weight_budget_mb * MEM_BUDGET_PCT / 100 ))
 
     local safe_ngl=$(( available_mb / bytes_per_layer_mb ))
 
