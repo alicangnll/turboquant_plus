@@ -96,9 +96,9 @@ mem_choice=${mem_choice:-2}
 
 case "$mem_choice" in
   1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
-  2) MEM_BUDGET_PCT=45; MEM_LABEL="Balanced" ;;
+  2) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
   3) MEM_BUDGET_PCT=5; MEM_LABEL="Ultra-Eco" ;;
-  *) MEM_BUDGET_PCT=45; MEM_LABEL="Balanced" ;;
+  *) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
 esac
 
 # Detect Performance Cores (P-Cores) for Apple Silicon
@@ -177,10 +177,9 @@ if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" 
     CACHE_TYPE_V="turbo2"
     echo "    Extra parameters (Extreme Swap): $EXTRA_ARGS with turbo2+2"
 elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
-    echo ">>> 100B Class Model Detected: Adjusting for $MEM_LABEL mode..."
-    CTX=512; [ "$mem_choice" -eq 1 ] && CTX=1024
-    EXTRA_ARGS="-c $CTX -b 512 -ub 256 -t 12"
+    EXTRA_ARGS="-c $CTX -b 512 -ub 256 -t 12 --repeat-penalty 1.1 --top-p 0.9"
     CACHE_TYPE_K="turbo4"
+    CHAT_TEMPLATE="command-r"
     if [ "$mem_choice" -eq 3 ]; then CACHE_TYPE_V="turbo2"; else CACHE_TYPE_V="turbo4"; fi
     echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
@@ -189,19 +188,18 @@ elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" ==
     CTX=512
     [ "$mem_choice" -eq 1 ] && CTX=1024
     [ "$mem_choice" -eq 3 ] && CTX=256
-    EXTRA_ARGS="-c $CTX -b 64 -ub 32 -sm none"
+    EXTRA_ARGS="-c $CTX -b 32 -ub 32 -sm none --repeat-penalty 1.1 --top-p 0.9"
     # To hit 16GB, we use aggressive turbo2 for both K and V in Balanced/Eco
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
-    if [ "$mem_choice" -ge 2 ]; then
-        CACHE_TYPE_K="turbo2"
-        CACHE_TYPE_V="turbo2"
-    fi
-    echo "    Extra parameters: $EXTRA_ARGS"
+    CHAT_TEMPLATE="qwen2"
 else
-    EXTRA_ARGS="-c 2048"
-    CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo4"
+    # 8B and smaller: Use high precision (f16) to ensure maximum intelligence
+    MODEL_NAME="Llama 3.1 8B"
+    EXTRA_ARGS="-c 4096 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9"
+    CACHE_TYPE_K="f16"
+    CACHE_TYPE_V="f16"
+    CHAT_TEMPLATE="llama3"
 fi
 
 # ---------------------------------------------------------------------------
@@ -347,8 +345,10 @@ env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   -t "$THREADS" \
   $EXTRA_ARGS \
   -fa on \
+  -cnv \
+  --chat-template "$CHAT_TEMPLATE" \
   --cache-type-k "$CACHE_TYPE_K" \
-  --cache-type-v "$CACHE_TYPE_V" \
+  --cache-type-v "$CACHE_TYPE_V"
   -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" \
   -n 300
 
