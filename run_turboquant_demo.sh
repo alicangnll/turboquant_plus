@@ -43,7 +43,8 @@ else
     echo "2) Qwen 2.5 32B Instruct (~20 GB - Balanced, Good Performance)"
     echo "3) Command R+ 104B (~43 GB - Highest Quality, 100B+ Class)"
     echo "4) Qwen 2.5 0.5B Instruct (~400 MB - For Quick Testing Only)"
-    read -p "Your choice (1/2/3/4) [Default: 4]: " model_choice
+    echo "5) Llama-3-405B / 500B Class (~250 GB - Extreme Memory / NVMe SWAP Test)"
+    read -p "Your choice (1/2/3/4/5) [Default: 4]: " model_choice
 fi
 
 mkdir -p models
@@ -64,6 +65,11 @@ case "$model_choice" in
     MODEL_URL="https://huggingface.co/mradermacher/c4ai-command-r-plus-08-2024-GGUF/resolve/main/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     MODEL_FILE="models/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     ;;
+  5|"500B"|"500b")
+    MODEL_NAME="Llama 3.1 405B (500B+ Class)"
+    MODEL_URL="https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
+    MODEL_FILE="models/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
+    ;;
   *)
     MODEL_NAME="Qwen 2.5 0.5B"
     MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -83,17 +89,26 @@ fi
 # Part 4: Running the Model with TurboQuant Settings
 echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
 
-if [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
+if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
+    echo ">>> 500B+ Class Model Detected: Activating EXTREME memory savings and NVMe swap optimizations..."
+    # -b 128: Low batch to prevent memory spikes on swap
+    # turbo2: 6.4x extreme compression to squeeze cache into remaining unified memory
+    EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8 --no-mmap"
+    CACHE_TYPE="turbo2"
+    echo "    Extra parameters (NVMe Swap Safe, Low Memory Footprint): $EXTRA_ARGS with $CACHE_TYPE"
+elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
     echo ">>> 100B Class Model Detected: Activating maximum performance and stability settings for Apple Silicon M Series..."
     EXTRA_ARGS="-c 1024 -b 2048 -ub 512 -t 12 --no-mmap"
+    CACHE_TYPE="turbo4"
     echo "    Extra parameters (Wired-memory freeze prevention, Wide Batch): $EXTRA_ARGS"
 else
     EXTRA_ARGS="-c 4096"
+    CACHE_TYPE="turbo4"
 fi
 
 # README recommends turbo4 to overcome M1/M2/M3 L2 Cache wall and accelerate dequantization
-# Additionally, TURBO_LAYER_ADAPTIVE=7 is enabled for Boundary V (Layer-aware) optimization quality
-echo "Used parameters: -ngl 99 $EXTRA_ARGS --cache-type-k turbo4 --cache-type-v turbo4"
+# (For 500B models, turbo2 is dynamically mandated to avoid out-of-memory)
+echo "Used parameters: -ngl 99 $EXTRA_ARGS --cache-type-k $CACHE_TYPE --cache-type-v $CACHE_TYPE"
 echo "-----------------------------------------------"
 
 env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
@@ -101,8 +116,8 @@ env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   -ngl 99 \
   $EXTRA_ARGS \
   -fa on \
-  --cache-type-k turbo4 \
-  --cache-type-v turbo4 \
+  --cache-type-k $CACHE_TYPE \
+  --cache-type-v $CACHE_TYPE \
   -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" \
   -n 300
 

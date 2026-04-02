@@ -368,10 +368,11 @@ python3 -m pytest tests/ -v
 
 ```bash
 # Full End-to-End Demo with Llama.cpp (Apple Silicon Optimized)
-# Supports selecting 8B, 32B, and 100B+ models out of the box with optimal presets:
+# Supports selecting 8B, 32B, 100B+, and 500B+ models out of the box:
 # - Uses turbo4/turbo4 to bypass L2 cache limits on M1-M3 chips
 # - Automatically enables Boundary V layer protection (TURBO_LAYER_ADAPTIVE=7)
-# - Automatically applies --no-mmap and custom batching for 100B models to prevent system freeze
+# - For 100B models: Applies --no-mmap and custom batching to prevent system freeze
+# - For 500B+ models (e.g. Llama 3 400B): Automatically falls back to extreme memory compression (turbo2/turbo2), limits batches (-b 128 -ub 64), restricts context, and optimizes for NVMe SSD swappiness to prevent kernel thrashing on Unified Memory.
 ./run_turboquant_demo.sh
 
 # Quick compression demo (no model needed)
