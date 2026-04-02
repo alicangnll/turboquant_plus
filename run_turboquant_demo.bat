@@ -70,8 +70,9 @@ echo 2^) Qwen 2.5 32B Instruct ^(~20 GB^)
 echo 3^) Command R+ 104B ^(~43 GB^)
 echo 4^) Qwen 2.5 0.5B Instruct ^(~400 MB^)
 echo 5^) Llama-3-405B / 500B Class ^(~250 GB^)
+echo 6^) GPT-OSS 20B ^(OpenAI MoE^)
 
-set /p model_choice="Your choice (1/2/3/4/5) [Default: 4]: "
+set /p model_choice="Your choice (1/2/3/4/5/6) [Default: 4]: "
 if "%model_choice%"=="" set model_choice=4
 
 if not exist "models" mkdir models
@@ -92,6 +93,10 @@ if "%model_choice%"=="1" (
     set MODEL_NAME=Llama 3.1 405B
     set MODEL_URL=https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf
     set MODEL_FILE=models\Meta-Llama-3.1-405B-Instruct.Q2_K.gguf
+) else if "%model_choice%"=="6" (
+    set MODEL_NAME=GPT-OSS 20B
+    set MODEL_URL=https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf
+    set MODEL_FILE=models\gpt-oss-20b-q4_k_m.gguf
 ) else (
     set MODEL_NAME=Qwen 2.5 0.5B
     set MODEL_URL=https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
@@ -139,11 +144,19 @@ if "%model_choice%"=="5" (
     set CACHE_TYPE_K=turbo2
     set CACHE_TYPE_V=turbo2
 )
+if "%model_choice%"=="6" (
+    set CTX=2048
+    if "%mem_choice%"=="3" set CTX=512
+    set CACHE_TYPE_K=turbo4
+    set CACHE_TYPE_V=turbo4
+    set CHAT_TEMPLATE=chatml
+)
 
 :: Set NGL (Offload layers to GPU) - Conservative estimation for Windows
 set NGL=32
 if "%model_choice%"=="3" set NGL=15
 if "%model_choice%"=="5" set NGL=5
+if "%model_choice%"=="6" set NGL=20
 
 echo ^>>> Memory Mode: %MEM_LABEL%
 echo ^>>> Running %MODEL_NAME% with CTX=%CTX% and NGL=%NGL%

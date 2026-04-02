@@ -119,7 +119,8 @@ else
     echo "3) Command R+ 104B (~43 GB - Highest Quality, 100B+ Class)"
     echo "4) Qwen 2.5 0.5B Instruct (~400 MB - For Quick Testing Only)"
     echo "5) Llama-3-405B / 500B Class (~250 GB - Extreme Memory / NVMe SWAP Test)"
-    read -p "Your choice (1/2/3/4/5) [Default: 4]: " model_choice
+    echo "6) GPT-OSS 20B (OpenAI MoE - Balanced Performance)"
+    read -p "Your choice (1/2/3/4/5/6) [Default: 4]: " model_choice
 fi
 
 mkdir -p models
@@ -149,6 +150,11 @@ case "$model_choice" in
     MODEL_NAME="Qwen 2.5 0.5B"
     MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
     MODEL_FILE="models/qwen2.5-0.5b-q4_k_m.gguf"
+    ;;
+  6|"20B"|"20b")
+    MODEL_NAME="GPT-OSS 20B"
+    MODEL_URL="https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf"
+    MODEL_FILE="models/gpt-oss-20b-q4_k_m.gguf"
     ;;
 esac
 
@@ -182,7 +188,6 @@ elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice
     CACHE_TYPE_K="turbo4"
     CHAT_TEMPLATE="command-r"
     if [ "$mem_choice" -eq 3 ]; then CACHE_TYPE_V="turbo2"; else CACHE_TYPE_V="turbo4"; fi
-    echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
     echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
     # Drop context and batch to save peak memory
@@ -194,14 +199,23 @@ elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" ==
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
     CHAT_TEMPLATE="qwen2"
+elif [[ "$model_choice" == "6" || "$model_choice" == "20"*"B" || "$model_choice" == "20"*"b" ]]; then
+    echo ">>> 20B MoE Class Model Detected: Tuning for $MEM_LABEL mode..."
+    CTX=2048
+    [ "$mem_choice" -eq 3 ] && CTX=512
+    EXTRA_ARGS="-c $CTX -b 128 -ub 128 --repeat-penalty 1.1 --top-p 0.9"
+    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_V="turbo4"
+    CHAT_TEMPLATE="chatml"
 else
     # 8B and smaller: Use q8_0 for high accuracy and reliable attention kernel compatibility
+    # IMPROVED: Llama 3.1 8B needs proper template and CoT prompt to prevent math hallucinations
     MODEL_NAME="Llama 3.1 8B"
     EXTRA_ARGS="-c 4096 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 --temp 0.1"
     CACHE_TYPE_K="q8_0"
     CACHE_TYPE_V="q8_0"
-    CHAT_TEMPLATE=""  # Auto-detect to avoid PEG parser errors
-    SKIP_SYSTEM_PROMPT=1
+    CHAT_TEMPLATE="llama3"
+    SYSTEM_PROMPT="You are a strict, step-by-step reasoning AI. For any math or logic problem, you MUST think out loud and show your work before giving the final answer."
 fi
 
 # ---------------------------------------------------------------------------
@@ -324,6 +338,7 @@ case "$model_choice" in
   2|"32B"|"32b")   NUM_LAYERS=64; N_HEADS=40; HEAD_DIM=128 ;;
   3|"100B"|"100b") NUM_LAYERS=96; N_HEADS=128; HEAD_DIM=128 ;;
   5|"500B"|"500b") NUM_LAYERS=126; N_HEADS=128; HEAD_DIM=128 ;;
+  6|"20B"|"20b")   NUM_LAYERS=24; N_HEADS=64; HEAD_DIM=64; N_EXPERT=32; N_EXPERT_USED=4 ;;
   *)               NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # 0.5B
 esac
 
