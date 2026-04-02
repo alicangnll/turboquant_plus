@@ -9,6 +9,7 @@ ROOT_DIR=$(pwd)
 echo "=============== TURBOQUANT DEMO ==============="
 
 # Helper: Detect and Install libomp (OpenMP) for high-speed CPU inference
+SYSTEM_PROMPT="You are a helpful, creative, and professional AI assistant. You provide concise and accurate answers."
 install_libomp() {
     echo ">>> Checking for libomp (OpenMP Support)..."
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -346,6 +347,7 @@ env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   $EXTRA_ARGS \
   -fa on \
   -cnv \
+  -sp "$SYSTEM_PROMPT" \
   --chat-template "$CHAT_TEMPLATE" \
   --cache-type-k "$CACHE_TYPE_K" \
   --cache-type-v "$CACHE_TYPE_V"
