@@ -147,8 +147,8 @@ case "$model_choice" in
     ;;
   6|"20B"|"20b")
     MODEL_NAME="GPT 20B (OSS)"
-    MODEL_URL="https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf"
-    MODEL_FILE="models/gpt-oss-20b-q4_k_m.gguf"
+    MODEL_URL="https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q4_K_M.gguf"
+    MODEL_FILE="models/openai_gpt-oss-20b-Q4_K_M.gguf"
     ;;
   *)
     MODEL_NAME="Qwen 2.5 0.5B"

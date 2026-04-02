@@ -29,6 +29,12 @@ Key (Anahtar) ve Value (Değer) tensörleri için bağımsız hassasiyet sunar. 
 ### 4. Akıllı MMAP Stratejisi
 Fiziksel RAM'den büyük modeller (100B, 500B) için geliştirilen akıllı bellek eşleme sayesinde, RAM yetmediğinde sistemin SSD üzerinden **NVMe Swap** kullanarak kilitlenmeden çalışması sağlanır.
 
+### 5. Evrensel Linux Desteği (CUDA & ROCm)
+TurboQuant+ artık Linux sunucuları ve iş istasyonları için tamamen optimize edilmiştir. Motor otomatik olarak şunları algılar:
+- **NVIDIA GPU**: Maksimum verim için CUDA arka ucunu etkinleştirir.
+- **AMD GPU**: Yüksek performanslı açık kaynaklı GPU ivmelendirmesi için ROCm/HIP arka ucunu etkinleştirir.
+- **CPU (OpenMP)**: GPU olmayan sistemlerde AVX/AMX komut setlerini kullanarak hızlı CPU çıkarımı sağlar.
+
 ## Temel Bulgular ve İnovasyonlar
 
 TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
@@ -58,6 +64,9 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
 
+### GPT-OSS-20B (MoE) Desteği
+`openai/gpt-oss-20b` sınıfı tarafından kullanılan **Mixture of Experts (MoE)** mimarisi için tam destek entegre edilmiştir. Demo betiklerimiz, 24 katmanlı MoE parametrelerini (8 KV kafası) bu modeller için belleği optimize edecek şekilde otomatik olarak yapılandırır.
+
 ## Nasıl Çalıştırılır?
 
 ### Gereksinimler
@@ -69,8 +78,14 @@ Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabil
 ```bash
 git clone https://github.com/TheTom/turboquant_plus.git
 cd turboquant_plus
-# Demo betiği OpenMP desteğini ve en iyi model ayarlarını otomatik yapılandırır
+# macOS: Metal + OpenMP için optimize edildi
 ./run_turboquant_demo.sh
+
+# Linux: CUDA + ROCm + OpenMP için optimize edildi
+./run_turboquant_demo_linux.sh
+
+# Windows: CUDA + OpenMP için optimize edildi
+run_turboquant_demo.bat
 ```
 
 ### llama.cpp ile Kullanım

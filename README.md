@@ -36,7 +36,7 @@ Validated end-to-end from 1.5B to **104B** on M5 Max via llama.cpp Metal. **104B
 
 ## 🚀 2026 Engine Updates: Stability & Memory Optimization
 
-The latest TurboQuant+ engine includes significant architectural improvements for stable inference of 32B–500B models on low-RAM Apple Silicon devices:
+The latest TurboQuant+ engine includes significant architectural improvements for stable inference of 32B–500B models on low-RAM Apple Silicon and high-performance Linux (CUDA/ROCm) devices:
 
 ### 1. Memory Optimization Levels (VRAM & RAM Control)
 You can now choose between three operational modes at startup:
@@ -57,6 +57,12 @@ The engine automatically detects your platform's `recommendedMaxWorkingSetSize` 
 
 ### 5. Smart MMAP Strategy
 For models larger than physical RAM (32B, 100B, 500B), the engine uses intelligent memory mapping (mmap) instead of fixed loading. This enables stable operation via **NVMe SSD Swap** when the model size exceeds unified memory.
+
+### 6. Universal Linux Support (CUDA & ROCm)
+TurboQuant+ is now fully optimized for Linux servers and workstations. The engine automatically detects:
+- **NVIDIA GPU**: Enables the CUDA backend for maximum throughput.
+- **AMD GPU**: Enables the ROCm/HIP backend for high-performance open-source GPU acceleration.
+- **CPU (OpenMP)**: Leverages multi-core AVX/AMX extensions for fast CPU-only inference.
 
 ## Status: v1 Complete, Speed Optimized, Community-Tested
 
@@ -391,13 +397,14 @@ python3 -m pytest tests/ -v
 ### Run the Demo
 
 ```bash
-# Full End-to-End Demo with Llama.cpp (Apple Silicon Optimized)
-# Supports selecting 8B, 32B, 100B+, and 500B+ models out of the box:
-# - Uses turbo4/turbo4 to bypass L2 cache limits on M1-M3 chips
-# - Automatically enables Boundary V layer protection (TURBO_LAYER_ADAPTIVE=7)
-# - For 100B models: Applies --no-mmap and custom batching to prevent system freeze
-# - For 500B+ models (e.g. Llama 3 400B): Automatically falls back to extreme memory compression (turbo2/turbo2), limits batches (-b 128 -ub 64), restricts context, and optimizes for NVMe SSD swappiness to prevent kernel thrashing on Unified Memory.
+# macOS (Apple Silicon Optimized)
 ./run_turboquant_demo.sh
+
+# Linux (CUDA / ROCm / OpenMP Optimized)
+./run_turboquant_demo_linux.sh
+
+# Windows (CUDA / OpenMP Optimized)
+run_turboquant_demo.bat
 
 # Quick compression demo (no model needed)
 python3 benchmarks/demo.py
@@ -424,6 +431,9 @@ Inspired by AirLLM's core insight: process transformer layers one at a time, fre
 - **`CachePolicy`** + `policy_for_model_size()`: Maps model size → optimal `k_bits`, `v_bits`, `max_context`
 - **Boundary layer protection**: first/last 2 layers always at higher precision (mirrors `TURBO_LAYER_ADAPTIVE=7`)
 - **Sparse V**: Attention-gated decompression — positions where softmax weight < threshold are skipped entirely.
+
+### GPT-OSS-20B (MoE) Support
+We have integrated full support for the **Mixture of Experts (MoE)** architecture used by the `openai/gpt-oss-20b` class. Our demo scripts now automatically configure the 24-layer MoE parameters (8 KV heads) to optimize memory routing for these mid-range high-performance models.
 
 #### `turboquant/streamed_inference.py`
 

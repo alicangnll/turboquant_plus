@@ -94,8 +94,8 @@ if "%model_choice%"=="1" (
     set MODEL_FILE=models\Meta-Llama-3.1-405B-Instruct.Q2_K.gguf
 ) else if "%model_choice%"=="6" (
     set MODEL_NAME=GPT 20B (OSS)
-    set MODEL_URL=https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf
-    set MODEL_FILE=models\gpt-oss-20b-q4_k_m.gguf
+    set MODEL_URL=https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q4_K_M.gguf
+    set MODEL_FILE=models\openai_gpt-oss-20b-Q4_K_M.gguf
 ) else (
     set MODEL_NAME=Qwen 2.5 0.5B
     set MODEL_URL=https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
