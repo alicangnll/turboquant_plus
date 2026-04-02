@@ -204,26 +204,31 @@ elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice
     echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
     echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
-    # Drop context and batch to save peak memory
+    # Drop context and batch to save peak memory and reduce swap thrashing
     CTX=512
     [ "$mem_choice" -eq 1 ] && CTX=1024
     [ "$mem_choice" -eq 3 ] && CTX=256
     
-    # NEW: AirLLM + TurboQuant Hybrid Optimization
-    # --mmap: Allows OS to swap model parts (AirLLM sharding concept)
-    EXTRA_ARGS="-c $CTX -b 128 -ub 128 --mmap --repeat-penalty 1.1"
+    # NEW: AirLLM + TurboQuant Speed Optimization
+    # --mmap: Necessary for over-RAM models
+    # -b 64 -ub 64: Small batch sizes prevent memory spikes during prefill
+    EXTRA_ARGS="-c $CTX -b 64 -ub 64 --mmap --repeat-penalty 1.1"
+    
+    # Matching Threads to Performance Cores (typically 4 on MacBook Air/Pro M1-M3)
+    # Using too many threads while swapping causes context-switch overhead (slowdown)
+    THREADS=4
     
     # Set safe NGL for 32B on 16GB
     if [ "$mem_choice" -eq 1 ]; then NGL=32; 
     elif [ "$mem_choice" -eq 2 ]; then NGL=12; 
-    elif [ "$mem_choice" -eq 3 ]; then NGL=0; # CPU only for absolute stability
+    elif [ "$mem_choice" -eq 3 ]; then NGL=0; 
     fi
     
-    # 4-bit KV compression for both K and V
+    # TurboQuant Duo-Precision: K=4-bit (Intelligence), V=2-bit (Memory/Speed)
     CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo4"
+    CACHE_TYPE_V="turbo2"
     CHAT_TEMPLATE="qwen2"
-    echo "    Extra parameters: $EXTRA_ARGS with NGL=$NGL"
+    echo "    Speed Optimization: K=turbo4, V=turbo2, Threads=$THREADS, Batch=64"
 else
     # 8B and smaller: Use high precision (f16) to ensure maximum intelligence
     MODEL_NAME="Llama 3.1 8B"
