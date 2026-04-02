@@ -147,6 +147,7 @@ git checkout feature/turboquant-kv-cache
 echo ">>> Compiling with $BACKEND flags..."
 cmake -B build -DCMAKE_BUILD_TYPE=Release $CMAKE_FLAGS
 cmake --build build -j --target llama-cli
+cd "$ROOT_DIR"
 
 # Part 3: Configuration
 echo ">>> [3/5] Select Memory Optimization Level:"
@@ -243,6 +244,7 @@ if [ "$USE_LLMTUNING" -eq 1 ]; then
     echo ">>> Benefit: Stable inference for 32B+ models on 16GB RAM"
     echo "==========================================================="
     
+    cd "$ROOT_DIR"
     source .venv/bin/activate
     python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
 else
