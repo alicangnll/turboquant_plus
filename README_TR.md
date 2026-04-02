@@ -77,22 +77,23 @@ Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabil
 - cmake ve C++ derleyici
 - Xcode Command Line Tools (macOS)
 
-### 🚀 Hızlı Başlangıç (Evrensel Başlatıcı)
+### 🚀 Hızlı Başlangıç (Akıllı Yönlendirme)
 
-Sistem artık en uygun motoru otomatik olarak seçen `turbo.sh` wrapper scriptini içerir.
+Resmi demo betikleri artık model seçiminize ve önbellek ayarlarınıza göre en uygun motoru otomatik olarak seçer.
 
 #### 1. Yüksek Performans Modu (C++)
-8B modeller veya 32GB+ RAM sistemlerde maksimum hız için:
+8B modeller veya 32GB+ RAM sistemlerde maksimum hız için betikler yüksek hızlı C++ çekirdeğini kullanır.
 ```bash
-./turbo.sh -m models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf --cache-type-k turbo4 --cache-type-v turbo4
+# macOS
+./run_turboquant_demo_macos.sh
+# Linux
+./run_turboquant_demo_linux.sh
 ```
 
 #### 2. Otomatik Tuning / AirLLM Modu (Python)
-**16GB RAM cihazlarda 32B+ modeller için önerilir.** `turbo4-K` ve `turbo2-V` birlikte kullanıldığında **LLMTuning Mantığı** (asenkron katman-sharding) otomatik olarak devreye girer.
-```bash
-./turbo.sh -m models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --cache-type-k turbo4 --cache-type-v turbo2
-```
-*Not: Bu mod düşük bellekli cihazlarda stabildir ancak saniyede 0.5–1.0 kelime civarı üretir.*
+**16GB RAM cihazlarda 32B+ modeller için önerilir.** Büyük bir model (Qwen 2.5 32B gibi) seçtiğinizde, betik otomatik olarak **LLMTuning Mantığını** (asenkron katman-sharding) Python motoru üzerinden devreye alır.
+-   **Tetikleyici**: Qwen 32B seçimi veya manuel `turbo4-K` ve `turbo2-V` yapılandırması.
+-   **Avantaj**: Düşük bellekli cihazlarda kilitlenmeden (OOM önleyerek) güvenli çalışma.
 
 ---
 
