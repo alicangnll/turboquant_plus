@@ -96,9 +96,9 @@ mem_choice=${mem_choice:-2}
 
 case "$mem_choice" in
   1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
-  2) MEM_BUDGET_PCT=35; MEM_LABEL="Balanced" ;;
+  2) MEM_BUDGET_PCT=45; MEM_LABEL="Balanced" ;;
   3) MEM_BUDGET_PCT=5; MEM_LABEL="Ultra-Eco" ;;
-  *) MEM_BUDGET_PCT=35; MEM_LABEL="Balanced" ;;
+  *) MEM_BUDGET_PCT=45; MEM_LABEL="Balanced" ;;
 esac
 
 # Detect Performance Cores (P-Cores) for Apple Silicon
@@ -184,16 +184,19 @@ elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice
     if [ "$mem_choice" -eq 3 ]; then CACHE_TYPE_V="turbo2"; else CACHE_TYPE_V="turbo4"; fi
     echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
-    echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode..."
-    # Drop context to 256 in Eco mode to save KV RAM
+    echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
+    # Drop context and batch to save peak memory
     CTX=512
     [ "$mem_choice" -eq 1 ] && CTX=1024
     [ "$mem_choice" -eq 3 ] && CTX=256
-    EXTRA_ARGS="-c $CTX -b 128 -ub 64 -sm none"
-    # Even in balanced, use turbo2 for V to save memory
+    EXTRA_ARGS="-c $CTX -b 64 -ub 32 -sm none"
+    # To hit 16GB, we use aggressive turbo2 for both K and V in Balanced/Eco
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
-    [ "$mem_choice" -eq 3 ] && CACHE_TYPE_K="turbo2" # Ultra-eco uses 2-bit for both
+    if [ "$mem_choice" -ge 2 ]; then
+        CACHE_TYPE_K="turbo2"
+        CACHE_TYPE_V="turbo2"
+    fi
     echo "    Extra parameters: $EXTRA_ARGS"
 else
     EXTRA_ARGS="-c 2048"
