@@ -347,10 +347,10 @@ env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   $EXTRA_ARGS \
   -fa on \
   -cnv \
-  -sp "$SYSTEM_PROMPT" \
+  -sys "$SYSTEM_PROMPT" \
   --chat-template "$CHAT_TEMPLATE" \
   --cache-type-k "$CACHE_TYPE_K" \
-  --cache-type-v "$CACHE_TYPE_V"
+  --cache-type-v "$CACHE_TYPE_V" \
   -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" \
   -n 300
 
