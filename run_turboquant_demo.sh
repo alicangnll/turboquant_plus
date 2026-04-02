@@ -8,6 +8,47 @@ ROOT_DIR=$(pwd)
 
 echo "=============== TURBOQUANT DEMO ==============="
 
+# Helper: Detect and Install libomp (OpenMP) for high-speed CPU inference
+install_libomp() {
+    echo ">>> Checking for libomp (OpenMP Support)..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if ! brew list libomp &>/dev/null; then
+            echo ">>> macOS detected: Installing libomp via Homebrew..."
+            brew install libomp
+        fi
+        LIBOMP_PREFIX=$(brew --prefix libomp)
+        OMP_ENABLED="ON"
+        OMP_C_FLAGS="-Xpreprocessor -fopenmp -I$LIBOMP_PREFIX/include"
+        OMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I$LIBOMP_PREFIX/include"
+        OMP_LIB_LDFLAGS="-L$LIBOMP_PREFIX/lib"
+        OMP_INC_CPPFLAGS="-I$LIBOMP_PREFIX/include"
+        OMP_DYLD_PATH="$LIBOMP_PREFIX/lib"
+        OMP_LIB_PATH="$LIBOMP_PREFIX/lib/libomp.dylib"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt-get &>/dev/null; then
+            if ! dpkg -s libomp-dev &>/dev/null; then
+                echo ">>> Linux (Debian/Ubuntu) detected: Installing libomp via apt..."
+                sudo apt-get update && sudo apt-get install -y libomp-dev
+            fi
+        elif command -v pacman &>/dev/null; then
+            if ! pacman -Qs libomp &>/dev/null; then
+                echo ">>> Linux (Arch) detected: Installing libomp via pacman..."
+                sudo pacman -S --noconfirm libomp
+            fi
+        fi
+        OMP_ENABLED="ON"
+    elif [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "cygwin"* ]]; then
+        echo ">>> Windows (MSYS2/Cygwin) detected: Checking for mingw-w64-libomp..."
+        if command -v pacman &>/dev/null && ! pacman -Qs mingw-w64-x86_64-libomp &>/dev/null; then
+            pacman -S --noconfirm mingw-w64-x86_64-libomp
+        fi
+        OMP_ENABLED="ON"
+    else
+        echo ">>> Unrecognized OS. Please ensure libomp is installed manually for OpenMP support."
+        OMP_ENABLED="OFF"
+    fi
+}
+
 # Part 1: Python Prototype
 echo ">>> [1/4] Setting up Python environment and installing dependencies..."
 python3 -m venv .venv
@@ -21,6 +62,8 @@ echo "-----------------------------------------------"
 
 # Part 2: Downloading and compiling llama.cpp fork (Apple Silicon - Metal)
 echo ">>> [2/4] Downloading llama.cpp TurboQuant version for practical use..."
+install_libomp
+
 if [ ! -d "llama-cpp-turboquant" ]; then
     git clone https://github.com/TheTom/llama-cpp-turboquant.git
 fi
@@ -29,9 +72,19 @@ cd llama-cpp-turboquant
 echo ">>> Switching to the relevant working branch..."
 git checkout feature/turboquant-kv-cache
 
-echo ">>> Compiling C++ engine for Mac (Metal) (this may take a while)..."
-cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+echo ">>> Compiling C++ engine with Dual Acceleration (Metal + OpenMP)..."
+cmake -B build \
+    -DGGML_METAL=ON \
+    -DGGML_METAL_EMBED_LIBRARY=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_OPENMP="${OMP_ENABLED:-OFF}" \
+    -DOpenMP_C_FLAGS="${OMP_C_FLAGS:-}" \
+    -DOpenMP_C_LIB_NAMES="omp" \
+    -DOpenMP_CXX_FLAGS="${OMP_CXX_FLAGS:-}" \
+    -DOpenMP_CXX_LIB_NAMES="omp" \
+    -DOpenMP_omp_LIBRARY="${OMP_LIB_PATH:-}"
+
+cmake --build build -j --target llama-cli
 
 # Part 3: Memory Optimization Level
 echo ">>> [3/5] Select Memory Optimization Level:"
@@ -278,10 +331,12 @@ echo "    KV cache (${CACHE_TYPE}, ctx=${CTX_LEN}): ~${KV_EST} MB"
 echo "    Safe GPU layers:   ${NGL}/${NUM_LAYERS}"
 
 # README recommends turbo4 to overcome M1/M2/M3 L2 Cache wall and accelerate dequantization
-# Enable OpenMP via Homebrew libomp
-export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
-export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/libomp/lib:$DYLD_LIBRARY_PATH"
+# Export library paths for OpenMP runtime
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    export LDFLAGS="${OMP_LIB_LDFLAGS:-}"
+    export CPPFLAGS="${OMP_INC_CPPFLAGS:-}"
+    export DYLD_LIBRARY_PATH="${OMP_DYLD_PATH:-}:$DYLD_LIBRARY_PATH"
+fi
 
 env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   -m "$MODEL_FILE" \
