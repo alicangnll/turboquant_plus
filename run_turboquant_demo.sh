@@ -195,12 +195,13 @@ elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" ==
     CACHE_TYPE_V="turbo2"
     CHAT_TEMPLATE="qwen2"
 else
-    # 8B and smaller: Use high precision (f16) to ensure maximum intelligence
+    # 8B and smaller: Use q8_0 for high accuracy and reliable attention kernel compatibility
     MODEL_NAME="Llama 3.1 8B"
-    EXTRA_ARGS="-c 4096 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9"
-    CACHE_TYPE_K="f16"
-    CACHE_TYPE_V="f16"
-    CHAT_TEMPLATE="llama3"
+    EXTRA_ARGS="-c 4096 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 --temp 0.1"
+    CACHE_TYPE_K="q8_0"
+    CACHE_TYPE_V="q8_0"
+    CHAT_TEMPLATE=""  # Auto-detect to avoid PEG parser errors
+    SKIP_SYSTEM_PROMPT=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -291,8 +292,11 @@ calculate_ngl() {
     kv_mb=$(estimate_kv_mb "$ctx_len" "$total_layers" "$n_heads" "$head_dim" "$cache_type")
 
     # ggml compute graph + activation buffers + Metal overhead
-    # Increased to 2500MB as 32B models have larger intermediate activation tensors
-    local graph_overhead_mb=2500
+    # Small models (8B) need less; large models (32B+) need significantly more
+    local graph_overhead_mb=2000
+    if [ "$total_layers" -ge 64 ]; then
+        graph_overhead_mb=4000
+    fi
 
     # Weight budget = total budget − KV − graph overhead
     local weight_budget_mb=$(( metal_budget_mb - kv_mb - graph_overhead_mb ))
@@ -340,19 +344,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     export DYLD_LIBRARY_PATH="${OMP_DYLD_PATH:-}:$DYLD_LIBRARY_PATH"
 fi
 
-env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
-  -m "$MODEL_FILE" \
-  -ngl "$NGL" \
-  -t "$THREADS" \
-  $EXTRA_ARGS \
-  -fa on \
-  -cnv \
-  -sys "$SYSTEM_PROMPT" \
-  --chat-template "$CHAT_TEMPLATE" \
-  --cache-type-k "$CACHE_TYPE_K" \
-  --cache-type-v "$CACHE_TYPE_V" \
-  -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" \
-  -n 300
+CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" $EXTRA_ARGS -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
+[ -z "$SKIP_SYSTEM_PROMPT" ] && CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
+[ -n "$CHAT_TEMPLATE" ] && CLI_CMD="$CLI_CMD --chat-template \"$CHAT_TEMPLATE\""
+
+eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed! You've run an LLM on your device with TurboQuant."
