@@ -92,16 +92,14 @@ echo ">>> [3/5] Select Memory Optimization Level:"
 echo "1) Performance (High GPU, fast, needs 32GB+ RAM)"
 echo "2) Balanced   (Moderate GPU, 24GB RAM safe)"
 echo "3) Ultra-Eco   (Minimal RAM, stable on 16GB systems)"
-echo "4) Streaming   (AirLLM + TurboQuant - Best for 32B/70B/400B on <16GB)"
-read -p "Your choice (1/2/3/4) [Default: 2]: " mem_choice
+read -p "Your choice (1/2/3) [Default: 2]: " mem_choice
 mem_choice=${mem_choice:-2}
 
 case "$mem_choice" in
-  1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance"; ENGINE="llama.cpp" ;;
-  2) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced"; ENGINE="llama.cpp" ;;
-  3) MEM_BUDGET_PCT=10; MEM_LABEL="Ultra-Eco"; ENGINE="llama.cpp" ;;
-  4) MEM_BUDGET_PCT=0;  MEM_LABEL="Streaming"; ENGINE="airllm" ;;
-  *) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced"; ENGINE="llama.cpp" ;;
+  1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
+  2) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
+  3) MEM_BUDGET_PCT=5; MEM_LABEL="Ultra-Eco" ;;
+  *) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
 esac
 
 # Detect Performance Cores (P-Cores) for Apple Silicon
@@ -131,31 +129,26 @@ case "$model_choice" in
     MODEL_NAME="Llama 3.1 8B"
     MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
     MODEL_FILE="models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-    SIZE_NUM=8
     ;;
   2|"32B"|"32b")
     MODEL_NAME="Qwen 2.5 32B"
     MODEL_URL="https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
     MODEL_FILE="models/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
-    SIZE_NUM=32
     ;;
   3|"100B"|"100b")
     MODEL_NAME="Command R+ 104B"
     MODEL_URL="https://huggingface.co/mradermacher/c4ai-command-r-plus-08-2024-GGUF/resolve/main/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     MODEL_FILE="models/c4ai-command-r-plus-08-2024.Q2_K.gguf"
-    SIZE_NUM=104
     ;;
   5|"500B"|"500b")
     MODEL_NAME="Llama 3.1 405B (500B+ Class)"
     MODEL_URL="https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
     MODEL_FILE="models/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
-    SIZE_NUM=405
     ;;
   *)
     MODEL_NAME="Qwen 2.5 0.5B"
     MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
     MODEL_FILE="models/qwen2.5-0.5b-q4_k_m.gguf"
-    SIZE_NUM=0.5
     ;;
 esac
 
@@ -175,21 +168,9 @@ else
 fi
 
 
-# Part 5: Running the Model
-echo ">>> [5/5] Starting the model ($ENGINE mode)..."
+# Part 4: Running the Model with TurboQuant Settings
+echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
 
-if [[ "$ENGINE" == "airllm" ]]; then
-    echo ">>> Running TurboQuant + AirLLM Architecture Verification (Python)..."
-    # Show report, then switch to real inference
-    python3 -m turboquant.streamed_inference --model "$MODEL_FILE" --size "$SIZE_NUM" --layers "$NUM_LAYERS"
-    echo ">>> Verification Complete. Activating REAL Streamed-Inference Engine (llama-cli)..."
-    echo "-----------------------------------------------"
-    # Map to Ultra-Eco for maximal stability via MMAP
-    mem_choice=3
-    MEM_LABEL="Ultra-Eco"
-fi
-
-# Direct llama-cli path (existing logic)
 if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
     echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
     EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8"
@@ -204,31 +185,15 @@ elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice
     echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
     echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
-    # Drop context and batch to save peak memory and reduce swap thrashing
+    # Drop context and batch to save peak memory
     CTX=512
     [ "$mem_choice" -eq 1 ] && CTX=1024
     [ "$mem_choice" -eq 3 ] && CTX=256
-    
-    # NEW: AirLLM + TurboQuant Speed Optimization
-    # --mmap: Necessary for over-RAM models
-    # -b 64 -ub 64: Small batch sizes prevent memory spikes during prefill
-    EXTRA_ARGS="-c $CTX -b 64 -ub 64 --mmap --repeat-penalty 1.1"
-    
-    # Matching Threads to Performance Cores (typically 4 on MacBook Air/Pro M1-M3)
-    # Using too many threads while swapping causes context-switch overhead (slowdown)
-    THREADS=4
-    
-    # Set safe NGL for 32B on 16GB
-    if [ "$mem_choice" -eq 1 ]; then NGL=32; 
-    elif [ "$mem_choice" -eq 2 ]; then NGL=12; 
-    elif [ "$mem_choice" -eq 3 ]; then NGL=0; 
-    fi
-    
-    # TurboQuant Duo-Precision: K=4-bit (Intelligence), V=2-bit (Memory/Speed)
+    EXTRA_ARGS="-c $CTX -b 32 -ub 32 -sm none --repeat-penalty 1.1 --top-p 0.9"
+    # To hit 16GB, we use aggressive turbo2 for both K and V in Balanced/Eco
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
     CHAT_TEMPLATE="qwen2"
-    echo "    Speed Optimization: K=turbo4, V=turbo2, Threads=$THREADS, Batch=64"
 else
     # 8B and smaller: Use high precision (f16) to ensure maximum intelligence
     MODEL_NAME="Llama 3.1 8B"

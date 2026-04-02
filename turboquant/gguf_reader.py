@@ -35,11 +35,9 @@ class GGUFMap:
         self.count_tensors = struct.unpack("<Q", self.fd.read(8))[0]
         self.count_metadata = struct.unpack("<Q", self.fd.read(8))[0]
 
-        # 1. Parse metadata KV pairs
-        self.metadata: Dict[str, any] = {}
+        # 1. Skip metadata KV pairs
         for _ in range(self.count_metadata):
-            key, val = self._read_kv()
-            self.metadata[key] = val
+            self._skip_kv()
 
         # 2. Parse tensor info table
         self.tensors: Dict[str, dict] = {}
@@ -58,68 +56,25 @@ class GGUFMap:
         length = struct.unpack("<Q", self.fd.read(8))[0]
         return self.fd.read(length).decode("utf-8")
 
-    def _read_kv(self) -> Tuple[str, any]:
+    def _skip_kv(self):
         key = self._read_str()
         value_type = struct.unpack("<I", self.fd.read(4))[0]
         # value_type: 0=u8, 1=i8, 2=u16, 3=i16, 4=u32, 5=i32, 6=f32, 7=bool, 8=str, 9=array, 10=u64, 11=i64, 12=f64
-        if value_type == 0: val = struct.unpack("<B", self.fd.read(1))[0]
-        elif value_type == 1: val = struct.unpack("<b", self.fd.read(1))[0]
-        elif value_type == 2: val = struct.unpack("<H", self.fd.read(2))[0]
-        elif value_type == 3: val = struct.unpack("<h", self.fd.read(2))[0]
-        elif value_type == 4: val = struct.unpack("<I", self.fd.read(4))[0]
-        elif value_type == 5: val = struct.unpack("<i", self.fd.read(4))[0]
-        elif value_type == 6: val = struct.unpack("<f", self.fd.read(4))[0]
-        elif value_type == 7: val = struct.unpack("?", self.fd.read(1))[0]
-        elif value_type == 8: val = self._read_str()
+        if value_type in (0, 1, 7): self.fd.seek(1, 1)
+        elif value_type in (2, 3): self.fd.seek(2, 1)
+        elif value_type in (4, 5, 6): self.fd.seek(4, 1)
+        elif value_type in (10, 11, 12): self.fd.seek(8, 1)
+        elif value_type == 8: self._read_str()
         elif value_type == 9: # Array
             sub_type = struct.unpack("<I", self.fd.read(4))[0]
             count = struct.unpack("<Q", self.fd.read(8))[0]
-            val = []
+            # This is recursive, but for common LLM tags it's usually simple types
             if sub_type == 8: # str array
-                for _ in range(count): val.append(self._read_str())
+                for _ in range(count): self._read_str()
             else:
+                # Fixed-size type array
                 sizes = {0:1,1:1,2:2,3:2,4:4,5:4,6:4,7:1,10:8,11:8,12:8}
-                fmts = {0:"<B",1:"<b",2:"<H",3:"<h",4:"<I",5:"<i",6:"<f",7:"?",10:"<Q",11:"<q",12:"<d"}
-                s = sizes[sub_type]
-                f = fmts[sub_type]
-                for _ in range(count): val.append(struct.unpack(f, self.fd.read(s))[0])
-        elif value_type == 10: val = struct.unpack("<Q", self.fd.read(8))[0]
-        elif value_type == 11: val = struct.unpack("<q", self.fd.read(8))[0]
-        elif value_type == 12: val = struct.unpack("<d", self.fd.read(8))[0]
-        else: val = None
-        return key, val
-
-    def get_arch(self) -> dict:
-        """Heuristically detect model architecture from metadata and tensors."""
-        arch = {
-            "num_layers": self.metadata.get("llama.block_count", 0),
-            "num_heads": self.metadata.get("llama.attention.head_count", 0),
-            "head_dim": self.metadata.get("llama.attention.head_count_kv", 0), # fallback
-        }
-
-        # If metadata is missing (older GGUF or weird tags), infer from tensor scans
-        if arch["num_layers"] == 0:
-            max_blk = -1
-            for name in self.tensors:
-                if name.startswith("blk."):
-                    try: blk = int(name.split(".")[1]); max_blk = max(max_blk, blk)
-                    except: pass
-            arch["num_layers"] = max_blk + 1
-
-        if arch["num_heads"] == 0:
-            # Check shape of blk.0.attn_q.weight
-            t_name = next((n for n in self.tensors if n.endswith("attn_q.weight")), None)
-            if t_name:
-                shape = self.tensors[t_name]["shape"]
-                # For Llama models, arch is hidden_size / num_heads = head_dim
-                # We'll guess 32 heads for 7B, 40 for 32B, etc. 
-                # Better: use typical 128 head_dim for large models
-                if len(shape) >= 1: arch["num_heads"] = shape[0] // 128
-
-        if arch.get("head_dim") == 0 or arch.get("head_dim") is None or isinstance(arch.get("head_dim"), list):
-             arch["head_dim"] = 128 # Industry standard
-
-        return arch
+                self.fd.seek(count * sizes[sub_type], 1)
 
     def _read_tensor_info(self) -> Tuple[str, dict]:
         name = self._read_str()
