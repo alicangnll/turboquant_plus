@@ -1,6 +1,6 @@
 """GGUF Reader — Light, NumPy-only partial tensor loader.
 
-Allows AirLLM-style layer-by-layer weight streaming on Apple Silicon without
+Allows LLMTuning-style layer-by-layer weight streaming on Apple Silicon without
 loading the entire model file into RAM. Each layer is mapped from the GGUF
 on-disk and only converted to float32 NumPy arrays during the active compute.
 """
@@ -109,7 +109,7 @@ class GGUFMap:
 
                  # Map the tensor (zero copy)
                  # Note: llama.cpp GGUF quantization (Q4_K, etc.) requires specialized dequantization.
-                 # For the AirLLM + TurboQuant demo, we assume float16 or float32 for simplicity,
+                 # For the LLMTuning + TurboQuant demo, we assume float16 or float32 for simplicity,
                  # or we skip reading if it's already quantized (to avoid complexity).
                  if info["type"] in (0, 1): # F32 or F16
                       dtype = np.float32 if info["type"] == 0 else np.float16

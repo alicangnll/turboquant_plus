@@ -87,14 +87,14 @@ TurboQuant+ is now fully optimized for Linux servers and workstations. The engin
 
 ### Top-of-Tree Results
 
-| Cache Type | Bits/val | Compression | PPL (wikitext-2, 512c) | vs q8_0 |
-|------------|----------|-------------|----------------------|---------|
-| f16 | 16.0 | 1.0x | 6.121 | -0.16% |
-| q8_0 | 8.5 | 1.9x | 6.111 | baseline |
-| **turbo4** | **4.25** | **3.8x** | **6.125** | **+0.23%** |
-| q4_0 | 4.5 | 3.6x | 6.142 | +0.52% |
-| turbo3 | 3.5† | 4.6x† | 6.176 | +1.06% |
-| turbo2 | 2.5 | 6.4x | 6.507 | +6.48% |
+| Cache Type | Bits/val | Compression | PPL (wikitext-2, 512c) | vs q8_0    |
+| ---------- | -------- | ----------- | ---------------------- | ---------- |
+| f16        | 16.0     | 1.0x        | 6.121                  | -0.16%     |
+| q8_0       | 8.5      | 1.9x        | 6.111                  | baseline   |
+| **turbo4** | **4.25** | **3.8x**    | **6.125**              | **+0.23%** |
+| q4_0       | 4.5      | 3.6x        | 6.142                  | +0.52%     |
+| turbo3     | 3.5†     | 4.6x†       | 6.176                  | +1.06%     |
+| turbo2     | 2.5      | 6.4x        | 6.507                  | +6.48%     |
 
 turbo4 (4-bit PolarQuant) has the best quality after q8_0 — closer to q8_0 than q4_0, at better compression. turbo3 trades quality for maximum compression. turbo2 (2-bit) trades more quality for extreme compression — best used asymmetrically.
 
@@ -108,10 +108,10 @@ turbo4 (4-bit PolarQuant) has the best quality after q8_0 — closer to q8_0 tha
 
 TurboQuant supports independent K and V cache types. In current testing, keeping K at q8_0 while compressing V with turbo rescues quality on low-bit models where symmetric turbo degrades:
 
-| Model (weights) | K | V | PPL | vs q8_0 |
-|-----------------|---|---|------|---------|
-| Qwen2.5-7B (Q4_K_M) | q8_0 | turbo4 | 6.64 | +1.0% |
-| Qwen2.5-7B (Q4_K_M) | q8_0 | turbo3 | 6.71 | +2.0% |
+| Model (weights)     | K      | V      | PPL  | vs q8_0      |
+| ------------------- | ------ | ------ | ---- | ------------ |
+| Qwen2.5-7B (Q4_K_M) | q8_0   | turbo4 | 6.64 | +1.0%        |
+| Qwen2.5-7B (Q4_K_M) | q8_0   | turbo3 | 6.71 | +2.0%        |
 | Qwen2.5-7B (Q4_K_M) | turbo3 | turbo3 | 3556 | catastrophic |
 
 ```bash
@@ -124,12 +124,12 @@ llama-server -m model-Q4_K_M.gguf -ctk q8_0 -ctv turbo4 -fa 1
 
 Not all V layers need the same precision. Boundary V protects the first 2 + last 2 layers with q8_0-V while compressing all remaining layers with turbo2-V. 15 lines of code, no speed penalty.
 
-| Model | turbo2 PPL | Boundary V PPL | turbo3 PPL | Quality recovered |
-|-------|-----------|---------------|-----------|-------------------|
-| phi-4-Q8_0 (40L) | 4.835 | 4.784 | 4.742 | 55% |
-| Qwen2.5-7B Q4_K_M (28L) | 6.911 | 6.835 | 6.707 | 37% |
-| Qwen3.5-35B MoE (64L) | 5.257 | 5.148 | 5.137 | 91% |
-| Qwen3.5-27B Dense (36L) | 6.534 | 6.423 | 6.273 | 42% |
+| Model                   | turbo2 PPL | Boundary V PPL | turbo3 PPL | Quality recovered |
+| ----------------------- | ---------- | -------------- | ---------- | ----------------- |
+| phi-4-Q8_0 (40L)        | 4.835      | 4.784          | 4.742      | 55%               |
+| Qwen2.5-7B Q4_K_M (28L) | 6.911      | 6.835          | 6.707      | 37%               |
+| Qwen3.5-35B MoE (64L)   | 5.257      | 5.148          | 5.137      | 91%               |
+| Qwen3.5-27B Dense (36L) | 6.534      | 6.423          | 6.273      | 42%               |
 
 Validated at 512 and 8K context. NIAH retrieval passed. Benefit scales with model depth (91% on 64-layer MoE). Independently validated by @Corianas_ on NanoGPT.
 
@@ -145,49 +145,49 @@ See [full paper](docs/papers/layer-aware-v-compression.md).
 ### Prefill Context Scaling (Verified 2K-32K)
 
 | Context | turbo4 tok/s | turbo3 tok/s | q8_0 tok/s | turbo4/q8_0 | turbo3/q8_0 |
-|---------|-------------|-------------|-----------|------------|------------|
-| 2K | 2682 | 2708 | 2665 | 1.01x | 1.02x |
-| 4K | 2370 | 2289 | 2255 | 1.05x | 1.01x |
-| 8K | 2041 | 2054 | 2002 | 1.02x | 1.03x |
-| 16K | 1621 | 1698 | 1605 | 1.01x | 1.06x |
-| 32K | 1141 | 1204 | 1098 | 1.04x | 1.10x |
+| ------- | ------------ | ------------ | ---------- | ----------- | ----------- |
+| 2K      | 2682         | 2708         | 2665       | 1.01x       | 1.02x       |
+| 4K      | 2370         | 2289         | 2255       | 1.05x       | 1.01x       |
+| 8K      | 2041         | 2054         | 2002       | 1.02x       | 1.03x       |
+| 16K     | 1621         | 1698         | 1605       | 1.01x       | 1.06x       |
+| 32K     | 1141         | 1204         | 1098       | 1.04x       | 1.10x       |
 
 **Prefill: both turbo3 and turbo4 match or exceed q8_0 speed.** Compressed cache uses less bandwidth.
 
 ### Decode Speed — MoE (M5 Max 128GB, Qwen3.5-35B-A3B, Sparse V)
 
-| Config | Short (tg128) | pp32768+tg128 | Short vs q8_0 |
-|--------|--------------|---------------|--------------|
-| q8_0 | 85.71 tok/s | 1173.91 tok/s | — |
-| **turbo4** | **79.87 tok/s** | **1060.12 tok/s** | **0.93x** |
-| turbo3 | 76.84 tok/s | 1141.74 tok/s | 0.90x |
+| Config     | Short (tg128)   | pp32768+tg128     | Short vs q8_0 |
+| ---------- | --------------- | ----------------- | ------------- |
+| q8_0       | 85.71 tok/s     | 1173.91 tok/s     | —             |
+| **turbo4** | **79.87 tok/s** | **1060.12 tok/s** | **0.93x**     |
+| turbo3     | 76.84 tok/s     | 1141.74 tok/s     | 0.90x         |
 
 turbo4 decode is faster than turbo3 due to simpler nibble packing and direct-extract dequant.
 
 **Real-world server benchmark (70-page PDF, ~24K context):**
 
 | Config | Prefill tok/s | Decode tok/s | Decode vs q8_0 |
-|--------|-------------|-------------|---------------|
-| q8_0 | 1449.9 | 68.2 | — |
-| turbo4 | 1405.9 | 63.7 | 0.93x |
-| turbo3 | 1417.8 | 53.3 | 0.78x |
+| ------ | ------------- | ------------ | -------------- |
+| q8_0   | 1449.9        | 68.2         | —              |
+| turbo4 | 1405.9        | 63.7         | 0.93x          |
+| turbo3 | 1417.8        | 53.3         | 0.78x          |
 
 ### NIAH Retrieval (turbo4)
 
-| Test | q8_0 | turbo4 | turbo3 + sparse V |
-|------|------|--------|-------------------|
-| Single needle (33 positions) | 30/33 (90.9%) | **31/33 (93.9%)** | 9/9 (3-pos) |
+| Test                         | q8_0          | turbo4            | turbo3 + sparse V |
+| ---------------------------- | ------------- | ----------------- | ----------------- |
+| Single needle (33 positions) | 30/33 (90.9%) | **31/33 (93.9%)** | 9/9 (3-pos)       |
 
 turbo4 beats q8_0 on retrieval (31/33 vs 30/33). Shared failure at 8K/100% is a model weakness, not quantization. See [turbo4 resurrection](docs/papers/turbo4-resurrection.md) for the full investigation.
 
 ### Large Model Stress Tests (M5 Max 128GB)
 
-| Model | Params | Weights | Config | PPL | vs q8_0 | Max Context | NIAH |
-|-------|--------|---------|--------|-----|---------|-------------|------|
-| Llama-3.1-70B | 70B | Q4_K_M | turbo4/turbo4 | 3.461 | +6.3% | 48K | 30/30 |
-| Llama-3.1-70B | 70B | Q4_K_M | turbo3/turbo3 | 3.629 | +11.4% | 48K | 30/30 |
-| **Command-R+ 104B** | **104B** | **Q4_K_M** | **turbo4/turbo4** | **6.312** | **+1.9%** | **128K** | **10/10** |
-| **Command-R+ 104B** | **104B** | **Q4_K_M** | **turbo3/turbo3** | **6.415** | **+3.6%** | **128K** | **10/10** |
+| Model               | Params   | Weights    | Config            | PPL       | vs q8_0   | Max Context | NIAH      |
+| ------------------- | -------- | ---------- | ----------------- | --------- | --------- | ----------- | --------- |
+| Llama-3.1-70B       | 70B      | Q4_K_M     | turbo4/turbo4     | 3.461     | +6.3%     | 48K         | 30/30     |
+| Llama-3.1-70B       | 70B      | Q4_K_M     | turbo3/turbo3     | 3.629     | +11.4%    | 48K         | 30/30     |
+| **Command-R+ 104B** | **104B** | **Q4_K_M** | **turbo4/turbo4** | **6.312** | **+1.9%** | **128K**    | **10/10** |
+| **Command-R+ 104B** | **104B** | **Q4_K_M** | **turbo3/turbo3** | **6.415** | **+3.6%** | **128K**    | **10/10** |
 
 turbo3 prefill is faster than q8_0 at 32K on both models (70B: 80.8 vs 75.2 t/s, 104B: 64.5 vs 62.3 t/s). Smaller KV cache = less memory bandwidth during attention.
 
@@ -197,22 +197,22 @@ See [M5 Max stress test](docs/papers/m5-max-stress-test.md) for the full data.
 
 ### KL Divergence vs f16
 
-| Cache | Mean KLD | Δp RMS | Same top-p % |
-|-------|----------|--------|-------------|
-| q8_0 | 0.001549 | 1.23% | 98.43% |
-| **turbo4** | **0.009633** | **2.71%** | **95.98%** |
-| q4_0 | 0.008091 | 2.75% | 95.83% |
-| turbo3 | 0.016145 | 4.09% | 94.31% |
+| Cache      | Mean KLD     | Δp RMS    | Same top-p % |
+| ---------- | ------------ | --------- | ------------ |
+| q8_0       | 0.001549     | 1.23%     | 98.43%       |
+| **turbo4** | **0.009633** | **2.71%** | **95.98%**   |
+| q4_0       | 0.008091     | 2.75%     | 95.83%       |
+| turbo3     | 0.016145     | 4.09%     | 94.31%       |
 
 turbo4 KLD is 40% lower than turbo3. Same top-p agreement matches q4_0.
 
 ### Decode Speed — Dense (M5 Max 128GB, Qwen3.5-27B, Sparse V)
 
-| Test | With sparse V | Without | Delta |
-|------|-------------|---------|-------|
-| Short (tg128) | 16.73 | 16.61 | +0.7% |
-| 8K (pp8192+tg128) | 298.27 | 294.52 | +1.3% |
-| 16K (pp16384+tg128) | 316.98 | 311.24 | +1.8% |
+| Test                | With sparse V | Without | Delta |
+| ------------------- | ------------- | ------- | ----- |
+| Short (tg128)       | 16.73         | 16.61   | +0.7% |
+| 8K (pp8192+tg128)   | 298.27        | 294.52  | +1.3% |
+| 16K (pp16384+tg128) | 316.98        | 311.24  | +1.8% |
 
 Dense models see smaller gains (attention is <5% of decode — FFN dominates). No regressions. Safe to enable by default.
 
@@ -226,14 +226,14 @@ On M2/M1 (pre-M5), the auto-detected 4-mag LUT gives an additional +38-45% decod
 
 Tested by @jaker86 on RTX 3090. Model: Qwen3.5-9B Q4_K_M. Build from [signalnine's CUDA fork](https://github.com/signalnine/llama-cpp-turboquant-cuda) PR #24.
 
-| Config | K | V | PPL (wikitext-2) | vs q8_0 | Decode t/s | Prefill t/s |
-|--------|---|---|-----------------|---------|-----------|------------|
-| q8_0 | q8_0 | q8_0 | 8.2018 | — | 102.69 | 3774 |
-| turbo3 | turbo3 | turbo3 | 8.3124 | +1.3% | 98.68 | 3707 |
-| turbo4 | turbo4 | turbo4 | 8.3012 | +1.2% | 95.87 | 3628 |
-| turbo2 | turbo2 | turbo2 | 8.6639 | +5.6% | 98.05 | 3680 |
-| mixed | turbo3 | turbo2 | 8.5312 | +4.0% | 97.32 | 3524 |
-| mixed | turbo2 | turbo3 | 8.4356 | +2.9% | 96.61 | 3608 |
+| Config | K      | V      | PPL (wikitext-2) | vs q8_0 | Decode t/s | Prefill t/s |
+| ------ | ------ | ------ | ---------------- | ------- | ---------- | ----------- |
+| q8_0   | q8_0   | q8_0   | 8.2018           | —       | 102.69     | 3774        |
+| turbo3 | turbo3 | turbo3 | 8.3124           | +1.3%   | 98.68      | 3707        |
+| turbo4 | turbo4 | turbo4 | 8.3012           | +1.2%   | 95.87      | 3628        |
+| turbo2 | turbo2 | turbo2 | 8.6639           | +5.6%   | 98.05      | 3680        |
+| mixed  | turbo3 | turbo2 | 8.5312           | +4.0%   | 97.32      | 3524        |
+| mixed  | turbo2 | turbo3 | 8.4356           | +2.9%   | 96.61      | 3608        |
 
 CUDA decode within 4-7% of q8_0 across all configs. Prefill within 4-7%. Mixed K/V configs working correctly after PR #24 fix (prefill was 329 t/s before fix, now 3500+).
 
@@ -241,12 +241,12 @@ CUDA decode within 4-7% of q8_0 across all configs. Prefill within 4-7%. Mixed K
 
 Tested by @mariotomich. Model: Qwen3.5-35B-A3B Q8_0, Sparse V ON. Real prompt: 38,596 tokens (70-pages.md), llama-cli with Qwen chat template.
 
-| KV | Prefill t/s | Decode t/s | vs q8_0 |
-|----|------------|-----------|---------|
-| q8_0 | 399.0 | 12.4 | — |
-| turbo2 | 406.2 | 10.8 | -12.9% |
-| turbo3 | 370.4 | 7.7 | -37.9% |
-| **turbo4** | **365.0** | **16.6** | **+33.9%** |
+| KV         | Prefill t/s | Decode t/s | vs q8_0    |
+| ---------- | ----------- | ---------- | ---------- |
+| q8_0       | 399.0       | 12.4       | —          |
+| turbo2     | 406.2       | 10.8       | -12.9%     |
+| turbo3     | 370.4       | 7.7        | -37.9%     |
+| **turbo4** | **365.0**   | **16.6**   | **+33.9%** |
 
 **turbo4 decode beats q8_0 by +33.9% at long context on M1 Max.** At 38K tokens, KV bandwidth savings outweigh dequant cost. Sparse V amplifies the gain. turbo3 decode regression (-37.9%) is the known M1 L2 cache wall — turbo3 dequant complexity causes cache eviction on pre-M5 hardware.
 
@@ -254,20 +254,20 @@ Tested by @mariotomich. Model: Qwen3.5-35B-A3B Q8_0, Sparse V ON. Real prompt: 3
 
 Synthetic (llama-bench):
 
-| KV | pp512 t/s | tg128 t/s | pp65536+tg128 t/s |
-|----|-----------|-----------|-------------------|
-| q8_0 | 876.1 | 39.55 | 275.0 |
-| q8_0-K + turbo4-V | 894.9 (+2.2%) | 38.64 (-2.3%) | 271.0 (-1.5%) |
+| KV                | pp512 t/s     | tg128 t/s     | pp65536+tg128 t/s |
+| ----------------- | ------------- | ------------- | ----------------- |
+| q8_0              | 876.1         | 39.55         | 275.0             |
+| q8_0-K + turbo4-V | 894.9 (+2.2%) | 38.64 (-2.3%) | 271.0 (-1.5%)     |
 
 Asymmetric avoids the turbo3 decode regression (-37.9%) on pre-M5 hardware.
 
 KV cache memory at 262K context:
 
-| KV | Cache MiB | Saved | Compression |
-|----|-----------|-------|-------------|
-| q8_0 | 2782 | — | baseline |
-| turbo4 | 1422 | 1360 MiB | 1.96x |
-| q8_0-K + turbo4-V | 2102 | 680 MiB | 1.32x |
+| KV                | Cache MiB | Saved    | Compression |
+| ----------------- | --------- | -------- | ----------- |
+| q8_0              | 2782      | —        | baseline    |
+| turbo4            | 1422      | 1360 MiB | 1.96x       |
+| q8_0-K + turbo4-V | 2102      | 680 MiB  | 1.32x       |
 
 PPL on real document (70-pages.md, ctx=512, 20 chunks): q8_0 16.29, turbo4 16.44 (+0.93%), turbo3 16.42 (+0.76%), turbo2 17.22 (+5.69%).
 
@@ -275,13 +275,13 @@ PPL on real document (70-pages.md, ctx=512, 20 chunks): q8_0 16.29, turbo4 16.44
 
 First AMD GPU validation. First attempt — no debugging, no analysis, just raw testing out of the box. Qwen2.5-7B Q4_K_M on HIP SDK 7.1. gfx1201 detected natively — no `HSA_OVERRIDE_GFX_VERSION` needed.
 
-| K | V | PPL (wikitext-2) | vs q8_0 | Prefill t/s | Decode t/s | Status |
-|---|---|-----------------|---------|-------------|-----------|--------|
-| q8_0 | q8_0 | 7.794 | baseline | 589.5 | 84.7 | OK |
-| **q8_0** | **turbo4** | **7.876** | **+1.0%** | **588.4** | **86.8** | **recommended** |
-| q8_0 | turbo3 | NaN | catastrophic | 605.1 | 87.8 | broken (HIP-specific) |
-| turbo4 | turbo4 | 401.4 | catastrophic | 556.4 | 84.0 | broken (Q4_K_M) |
-| turbo3 | turbo3 | 81,277 | catastrophic | 580.3 | 86.0 | broken (Q4_K_M) |
+| K        | V          | PPL (wikitext-2) | vs q8_0      | Prefill t/s | Decode t/s | Status                |
+| -------- | ---------- | ---------------- | ------------ | ----------- | ---------- | --------------------- |
+| q8_0     | q8_0       | 7.794            | baseline     | 589.5       | 84.7       | OK                    |
+| **q8_0** | **turbo4** | **7.876**        | **+1.0%**    | **588.4**   | **86.8**   | **recommended**       |
+| q8_0     | turbo3     | NaN              | catastrophic | 605.1       | 87.8       | broken (HIP-specific) |
+| turbo4   | turbo4     | 401.4            | catastrophic | 556.4       | 84.0       | broken (Q4_K_M)       |
+| turbo3   | turbo3     | 81,277           | catastrophic | 580.3       | 86.0       | broken (Q4_K_M)       |
 
 **Key findings:**
 - **q8_0-K + turbo4-V confirmed on AMD** — +1.0% PPL, no speed penalty, 25% KV memory savings
@@ -294,26 +294,26 @@ See [Windows RDNA 4 Setup Guide](docs/windows-rdna4-setup.md) for build instruct
 
 ### Speed Optimization Journey
 
-| Optimization | Prefill tok/s | vs q8_0 |
-|-------------|--------------|---------|
-| turbo3 fp32 WHT (initial) | 739 | 0.27x |
-| + fp16 WHT | 1074 | 0.40x |
-| + half4 vectorized butterfly | 1411 | 0.52x |
-| + graph-side WHT rotation | 2095 | 0.78x |
-| + block-32 storage | 2747 | 1.02x |
-| **+ optimized dequant** | **2524** | **0.98x** |
+| Optimization                 | Prefill tok/s | vs q8_0   |
+| ---------------------------- | ------------- | --------- |
+| turbo3 fp32 WHT (initial)    | 739           | 0.27x     |
+| + fp16 WHT                   | 1074          | 0.40x     |
+| + half4 vectorized butterfly | 1411          | 0.52x     |
+| + graph-side WHT rotation    | 2095          | 0.78x     |
+| + block-32 storage           | 2747          | 1.02x     |
+| **+ optimized dequant**      | **2524**      | **0.98x** |
 
 > The final number (2524 at 4K) is lower than the peak (2747 at 512) because longer context is naturally slower. The key metric is the **ratio** vs q8_0, which stays flat at 0.99x. See [Speed Experiments](docs/speed-experiments.md) for the full journey.
 
 ### Compression Quality (Python Prototype)
 
-| Config | Compression | Cosine Sim | MSE |
-|--------|-------------|------------|-----|
-| TurboQuant 2-bit | 7.1× | 0.79 | 0.0047 |
-| TurboQuant 2.5-bit (outlier) | **4.9×** | 0.86 | 0.0029 |
-| TurboQuant 3-bit | 4.9× | 0.91 | 0.0018 |
-| TurboQuant 3.5-bit (outlier) | **3.8×** | 0.95 | 0.0009 |
-| TurboQuant 4-bit | 3.8× | 0.96 | 0.0007 |
+| Config                       | Compression | Cosine Sim | MSE    |
+| ---------------------------- | ----------- | ---------- | ------ |
+| TurboQuant 2-bit             | 7.1×        | 0.79       | 0.0047 |
+| TurboQuant 2.5-bit (outlier) | **4.9×**    | 0.86       | 0.0029 |
+| TurboQuant 3-bit             | 4.9×        | 0.91       | 0.0018 |
+| TurboQuant 3.5-bit (outlier) | **3.8×**    | 0.95       | 0.0009 |
+| TurboQuant 4-bit             | 3.8×        | 0.96       | 0.0007 |
 
 ### Needle-In-A-Haystack (NIAH) Retrieval
 
@@ -321,9 +321,9 @@ Tested using [Kamradt](https://github.com/gkamradt/LLMTest_NeedleInAHaystack) an
 
 **Single Needle Retrieval (with sparse V dequant):**
 
-| Test | q8_0 | turbo3 | turbo3 + sparse V |
-|------|------|--------|-------------------|
-| Single needle (9 positions) | 7/9 | 7/9 | **9/9 (100%)** |
+| Test                        | q8_0 | turbo3 | turbo3 + sparse V |
+| --------------------------- | ---- | ------ | ----------------- |
+| Single needle (9 positions) | 7/9  | 7/9    | **9/9 (100%)**    |
 
 turbo3 + sparse V achieves 9/9 in this setup (vs 7/9 baseline), suggesting a potential denoising effect from removing low-weight quantization noise. Needle positions have meaningful attention weights (well above the 1e-6 threshold) and are never skipped.
 
@@ -331,19 +331,19 @@ Sparse V shows no measurable impact on perplexity across all tested contexts and
 
 **Single Needle — Depth (0-100%) x Context Length (pre-sparse-V):**
 
-| Depth | 4K | 8K | 16K | 32K |
-|-------|----|----|-----|-----|
-| q8_0 | 5/5 | 4/5 | 4/5 | 4/5 |
+| Depth  | 4K  | 8K  | 16K | 32K |
+| ------ | --- | --- | --- | --- |
+| q8_0   | 5/5 | 4/5 | 4/5 | 4/5 |
 | turbo3 | 5/5 | 4/5 | 5/5 | 3/5 |
 
 **Pre-sparse-V aggregate: q8_0 85% (17/20), turbo3 80% (16/20).** No systematic degradation from compression. N=10 needles remarkably stable (9-10/10 at every depth).
 
 **Multi-Key with 3 Distractors (RULER MK-NIAH):**
 
-| Cache Type | 4K | 8K | 16K | 32K |
-|------------|----|----|-----|-----|
-| q8_0 | 1/1 | 1/1 | 1/1 | 1/1 |
-| turbo3 | 1/1 | 1/1 | 1/1 | 1/1 |
+| Cache Type | 4K  | 8K  | 16K | 32K |
+| ---------- | --- | --- | --- | --- |
+| q8_0       | 1/1 | 1/1 | 1/1 | 1/1 |
+| turbo3     | 1/1 | 1/1 | 1/1 | 1/1 |
 
 **100% retrieval accuracy with distractors through 32K.** turbo3 correctly ignores distractor needles at all context depths.
 
@@ -351,12 +351,12 @@ Sparse V shows no measurable impact on perplexity across all tested contexts and
 
 50-chunk wikitext-103 at 32K context (strongest validation, CI ±0.021):
 
-| Config | PPL | vs q8_0 | Sparse V Δ |
-|--------|-----|---------|------------|
-| q8_0 (8-bit KV) | 7.0638 | — | — |
-| q4_0 (4-bit KV) | 7.0857 | +0.31% | — |
-| turbo3 WITHOUT sparse V (3.5-bit) | 7.1796 | +1.64% | — |
-| turbo3 WITH sparse V (3.5-bit) | 7.1796 | +1.64% | **0.0000** |
+| Config                            | PPL    | vs q8_0 | Sparse V Δ |
+| --------------------------------- | ------ | ------- | ---------- |
+| q8_0 (8-bit KV)                   | 7.0638 | —       | —          |
+| q4_0 (4-bit KV)                   | 7.0857 | +0.31%  | —          |
+| turbo3 WITHOUT sparse V (3.5-bit) | 7.1796 | +1.64%  | —          |
+| turbo3 WITH sparse V (3.5-bit)    | 7.1796 | +1.64%  | **0.0000** |
 
 Note: q4_0 is included as a reference baseline. No optimization was applied to q4_0 in this work. Development focused on q8_0 and turbo3 paths.
 
@@ -414,20 +414,20 @@ pip install transformers torch accelerate
 python3 benchmarks/validate_real_model.py
 ```
 
-### AirLLM + TurboQuant Hybrid Python Pipeline
+### LLMTuning + TurboQuant Hybrid Python Pipeline
 
-Two new modules implement AirLLM's layer-sharding strategy with TurboQuant KV compression in pure NumPy (no GPU/CUDA required, works on Apple Silicon via MPS or CPU). It implements a **true 3-stage asynchronous pipeline**:
+Two new modules implement LLMTuning's layer-sharding strategy with TurboQuant KV compression in pure NumPy (no GPU/CUDA required, works on Apple Silicon via MPS or CPU). It implements a **true 3-stage asynchronous pipeline**:
 
 1.  **Thread 1 (Disk I/O)**: `LayerPrefetcher` pre-loads the next layer weights into RAM while the current layer is being processed.
 2.  **Thread 2 (GPU/Compute)**: The active layer performs inference on the current raw tensors.
 3.  **Thread 3 (CPU Compress)**: `KVCompressionWorker` compresses the KV cache of the *previous* layer in the background using idle P-Cores, overlapping compute and I/O.
 
-#### `turboquant/airllm_bridge.py`
+#### `turboquant/LLMTuning_bridge.py`
 
-Inspired by AirLLM's core insight: process transformer layers one at a time, freeing weights immediately after each layer. TurboQuant compression is applied to the resulting KV cache after each layer instead of holding it raw.
+Inspired by LLMTuning's core insight: process transformer layers one at a time, freeing weights immediately after each layer. TurboQuant compression is applied to the resulting KV cache after each layer instead of holding it raw.
 
-- **`AirLLMTurboSession`**: Stateful KV manager, auto-selects `turbo4` for 8B–100B and `turbo2` for 400B+
-- **`LayerPrefetcher`**: Mirrors AirLLM's `ThreadPoolExecutor` prefetch (overlaps disk I/O with GPU compute)
+- **`LLMTuningTurboSession`**: Stateful KV manager, auto-selects `turbo4` for 8B–100B and `turbo2` for 400B+
+- **`LayerPrefetcher`**: Mirrors LLMTuning's `ThreadPoolExecutor` prefetch (overlaps disk I/O with GPU compute)
 - **`CachePolicy`** + `policy_for_model_size()`: Maps model size → optimal `k_bits`, `v_bits`, `max_context`
 - **Boundary layer protection**: first/last 2 layers always at higher precision (mirrors `TURBO_LAYER_ADAPTIVE=7`)
 - **Sparse V**: Attention-gated decompression — positions where softmax weight < threshold are skipped entirely.
@@ -455,12 +455,12 @@ manager.benchmark_compression(seq_lengths=[512, 2048, 4096, 8192])
 
 **Validated results (synthetic attention, 8 layers, Apple M4):**
 
-| Model | Seq Len | KV Raw | KV Compressed | Ratio | Compress Overhead |
-|-------|---------|--------|---------------|-------|-------------------|
-| 8B (Llama) | 512 | 64 MB | 17 MB | **3.76×** | ~54 ms/layer |
-| 32B (Qwen) | 512 | 80 MB | 21 MB | **3.76×** | ~72 ms/layer |
-| 70B (Llama) | 256 | 64 MB | 17 MB | **3.76×** | ~56 ms/layer |
-| 104B (Command-R+) | 128 | 64 MB | 17 MB | **3.76×** | ~60 ms/layer |
+| Model             | Seq Len | KV Raw | KV Compressed | Ratio     | Compress Overhead |
+| ----------------- | ------- | ------ | ------------- | --------- | ----------------- |
+| 8B (Llama)        | 512     | 64 MB  | 17 MB         | **3.76×** | ~54 ms/layer      |
+| 32B (Qwen)        | 512     | 80 MB  | 21 MB         | **3.76×** | ~72 ms/layer      |
+| 70B (Llama)       | 256     | 64 MB  | 17 MB         | **3.76×** | ~56 ms/layer      |
+| 104B (Command-R+) | 128     | 64 MB  | 17 MB         | **3.76×** | ~60 ms/layer      |
 
 KV compression overhead is **~50–75 ms per layer** on CPU-only NumPy — negligible relative to disk I/O latency in a layer-sharded setup. When running via llama.cpp with Metal GPU kernels, this drops to microseconds.
 
@@ -526,12 +526,12 @@ The fork modifies these files from upstream llama.cpp:
 
 ### Cache Type Reference
 
-| Flag | Bits/val | Compression vs fp16 | Description |
-|------|----------|--------------------:|-------------|
-| `turbo3` | 3.5† | **4.6x**† | 3-bit PolarQuant + WHT rotation. Best compression, q8_0 speed. |
-| `turbo4` | 4.25 | **3.8x** | 4-bit PolarQuant (16 centroids). Best quality. |
-| `q8_0` | 8 | 2.0x | llama.cpp default quantized cache. |
-| `q4_0` | 4 | 4.0x | llama.cpp 4-bit cache. |
+| Flag     | Bits/val | Compression vs fp16 | Description                                                    |
+| -------- | -------- | ------------------: | -------------------------------------------------------------- |
+| `turbo3` | 3.5†     |           **4.6x**† | 3-bit PolarQuant + WHT rotation. Best compression, q8_0 speed. |
+| `turbo4` | 4.25     |            **3.8x** | 4-bit PolarQuant (16 centroids). Best quality.                 |
+| `q8_0`   | 8        |                2.0x | llama.cpp default quantized cache.                             |
+| `q4_0`   | 4        |                4.0x | llama.cpp 4-bit cache.                                         |
 
 ---
 
@@ -598,22 +598,22 @@ docs/
 
 ## Roadmap
 
-| Phase | Status | Details |
-|-------|--------|---------|
-| Core algorithms (NumPy) | ✅ | 500+ tests across 14 test files |
-| Distortion validation | ✅ | Matches paper bounds (Table 2) |
-| Real model validation | ✅ | Rotation validated on Qwen3 KV tensors (kurtosis 900→2.9) |
-| llama.cpp C port | ✅ | Metal GPU inference working on M1 through M5 |
-| Metal shader optimization | ✅ | **q8_0 speed parity**: prefill matches or beats q8_0 |
-| CUDA backend | ✅ | Community-tested on RTX 3080 Ti/3090/4090/5090, DGX Spark Blackwell |
-| HIP/AMD backend | ✅ | RX 9070 XT (RDNA 4) validated, gfx1201 native |
-| Asymmetric K/V | ✅ | q8_0-K + turbo-V rescues Q4_K_M models |
-| Boundary V | ✅ | Layer-aware V compression, 37-91% quality recovery |
-| Sparse V | ✅ | Attention-gated dequant skip, +22.8% decode on MoE. [Upstream PR #21119](https://github.com/ggml-org/llama.cpp/pull/21119) |
-| Block size optimization | ✅ | 32→128, 12% better compression, zero quality cost |
-| Upstream coordination | 🔄 | llama.cpp PR preparation ([#27](https://github.com/TheTom/turboquant_plus/issues/27)) |
-| TurboQuant+ extensions | ⏳ | Adaptive bits, temporal decay, MoE-aware compression |
-| MLX port | ⏳ | Community efforts underway (@ekryski MLX-Swift) |
+| Phase                     | Status | Details                                                                                                                    |
+| ------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Core algorithms (NumPy)   | ✅      | 500+ tests across 14 test files                                                                                            |
+| Distortion validation     | ✅      | Matches paper bounds (Table 2)                                                                                             |
+| Real model validation     | ✅      | Rotation validated on Qwen3 KV tensors (kurtosis 900→2.9)                                                                  |
+| llama.cpp C port          | ✅      | Metal GPU inference working on M1 through M5                                                                               |
+| Metal shader optimization | ✅      | **q8_0 speed parity**: prefill matches or beats q8_0                                                                       |
+| CUDA backend              | ✅      | Community-tested on RTX 3080 Ti/3090/4090/5090, DGX Spark Blackwell                                                        |
+| HIP/AMD backend           | ✅      | RX 9070 XT (RDNA 4) validated, gfx1201 native                                                                              |
+| Asymmetric K/V            | ✅      | q8_0-K + turbo-V rescues Q4_K_M models                                                                                     |
+| Boundary V                | ✅      | Layer-aware V compression, 37-91% quality recovery                                                                         |
+| Sparse V                  | ✅      | Attention-gated dequant skip, +22.8% decode on MoE. [Upstream PR #21119](https://github.com/ggml-org/llama.cpp/pull/21119) |
+| Block size optimization   | ✅      | 32→128, 12% better compression, zero quality cost                                                                          |
+| Upstream coordination     | 🔄      | llama.cpp PR preparation ([#27](https://github.com/TheTom/turboquant_plus/issues/27))                                      |
+| TurboQuant+ extensions    | ⏳      | Adaptive bits, temporal decay, MoE-aware compression                                                                       |
+| MLX port                  | ⏳      | Community efforts underway (@ekryski MLX-Swift)                                                                            |
 
 ## Paper Reference
 

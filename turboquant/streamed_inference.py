@@ -1,12 +1,12 @@
-"""Streamed Inference Manager — AirLLM + TurboQuant unified pipeline.
+"""Streamed Inference Manager — LLMTuning + TurboQuant unified pipeline.
 
 Combines two orthogonal optimizations into one NumPy-first, hardware-portable
 inference framework for large language models on memory-constrained hardware:
 
-  1. AirLLM strategy: layer-by-layer weight streaming from disk
+  1. LLMTuning strategy: layer-by-layer weight streaming from disk
      - Only one transformer layer's weights resident in memory at a time
      - ThreadPoolExecutor overlap: disk I/O prefetches next layer while GPU
-       computes the current one (identical approach to airllm_base.py:441-487)
+       computes the current one (identical approach to LLMTuning_base.py:441-487)
 
   2. TurboQuant strategy: KV cache compression between decode steps
      - K cache: full TurboQuant (inner product preservation for Q@K^T)
@@ -49,8 +49,8 @@ from typing import Optional, Callable
 
 import numpy as np
 
-from turboquant.airllm_bridge import (
-    AirLLMTurboSession,
+from turboquant.LLMTuning_bridge import (
+    LLMTuningTurboSession,
     CachePolicy,
     LayerKV,
     LayerPrefetcher,
@@ -118,7 +118,7 @@ class ForwardResult:
 
 
 # ---------------------------------------------------------------------------
-# Layer weight loader (AirLLM-style)
+# Layer weight loader (LLMTuning-style)
 # ---------------------------------------------------------------------------
 
 def _make_synthetic_layer_weights(
@@ -129,7 +129,7 @@ def _make_synthetic_layer_weights(
     """Generate synthetic Q/K/V weight matrices for demo/benchmark purposes.
 
     In a real integration, this would load from a HuggingFace safetensors shard
-    exactly as AirLLM does via load_layer() → safetensors.torch.load_file().
+    exactly as LLMTuning does via load_layer() → safetensors.torch.load_file().
     """
     d_model = head_dim * num_heads
     return {
@@ -185,7 +185,7 @@ class StreamedInferenceManager:
     """Layer-streamed inference with TurboQuant KV compression.
 
     This manager orchestrates:
-    1. Loading transformer layer weights one at a time (AirLLM strategy)
+    1. Loading transformer layer weights one at a time (LLMTuning strategy)
     2. Computing attention with prefetched weights
     3. Compressing the resulting KV cache immediately (TurboQuant)
     4. Freeing the layer weights from memory
@@ -217,7 +217,7 @@ class StreamedInferenceManager:
         self.head_dim = head_dim
         self.d_model = num_heads * head_dim
 
-        self.session = AirLLMTurboSession(
+        self.session = LLMTuningTurboSession(
             model_size_b=model_size_b,
             num_layers=num_layers,
             num_heads=num_heads,
@@ -274,7 +274,7 @@ class StreamedInferenceManager:
 
 
     def _clean_memory(self) -> None:
-        """Free memory aggressively (mirrors AirLLM's clean_memory())."""
+        """Free memory aggressively (mirrors LLMTuning's clean_memory())."""
         gc.collect()
 
     def demo_forward(
@@ -348,7 +348,7 @@ class StreamedInferenceManager:
                 hidden, k, v = _synthetic_attention_forward(
                     hidden, weights, num_heads, self.head_dim
                 )
-                del weights  # free immediately — AirLLM discipline
+                del weights  # free immediately — LLMTuning discipline
 
                 # Thread 3: start compressing THIS layer's KV async
                 # (while next iteration computes attention on GPU — zero wait)
@@ -478,7 +478,7 @@ class StreamedInferenceManager:
 def _run_demo_cli():
     """Run a quick demonstration printing memory stats for common model sizes."""
     print("\n" + "=" * 64)
-    print("TurboQuant + AirLLM Streamed Inference — Quick Demo")
+    print("TurboQuant + LLMTuning Streamed Inference — Quick Demo")
     print("=" * 64)
 
     configs = [

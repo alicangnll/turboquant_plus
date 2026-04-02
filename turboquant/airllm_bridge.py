@@ -1,13 +1,13 @@
-"""AirLLM Bridge for TurboQuant — Layer-Sharding + KV Compression.
+"""LLMTuning Bridge for TurboQuant — Layer-Sharding + KV Compression.
 
-Combines AirLLM's layer-sharding disk strategy with TurboQuant's KV cache
+Combines LLMTuning's layer-sharding disk strategy with TurboQuant's KV cache
 compression into a true 3-stage pipeline:
 
     Thread 1 (Disk I/O):    [Load Layer N+1] ──────────────────────▶
     Thread 2 (GPU/Compute):           [Compute Layer N] ────────────▶
     Thread 3 (CPU Compress):                    [Compress KV N-1] ──▶
 
-AirLLM's contribution integrated here:
+LLMTuning's contribution integrated here:
   - LayerPrefetcher: disk → CPU RAM async, overlapped with GPU compute
   - KVCompressionWorker: CPU KV compression async, overlapped with GPU compute
     of the NEXT layer (zero-wait compression via double-buffering)
@@ -28,9 +28,9 @@ Combined peak memory for 32B (64 layers, 40 heads, d=128, ctx=4096):
   - With:    ~350 MB (1 layer) + ~675 MB (KV compressed) = ~1 GB active
 
 Usage:
-    from turboquant.airllm_bridge import AirLLMTurboSession
+    from turboquant.LLMTuning_bridge import LLMTuningTurboSession
 
-    session = AirLLMTurboSession(model_size_b=32, num_layers=64,
+    session = LLMTuningTurboSession(model_size_b=32, num_layers=64,
                                   num_heads=40, head_dim=128)
 
     # Async compress (returns Future — compression overlaps next layer compute)
@@ -137,13 +137,13 @@ class LayerKV:
 
 
 # ---------------------------------------------------------------------------
-# AirLLM-inspired Prefetch Layer Loader (disk → CPU RAM, async)
+# LLMTuning-inspired Prefetch Layer Loader (disk → CPU RAM, async)
 # ---------------------------------------------------------------------------
 
 class LayerPrefetcher:
     """Background thread that pre-loads the next model layer weights from disk.
 
-    Mirrors AirLLM's ThreadPoolExecutor prefetch approach (airllm_base.py:441-487).
+    Mirrors LLMTuning's ThreadPoolExecutor prefetch approach (LLMTuning_base.py:441-487).
 
     This class is optional — it wraps any callable `load_fn(layer_path) -> dict`
     and overlaps disk I/O with GPU compute on the current layer.
@@ -189,15 +189,15 @@ class LayerPrefetcher:
 # Main session class
 # ---------------------------------------------------------------------------
 
-class AirLLMTurboSession:
-    """Stateful KV cache manager combining AirLLM + TurboQuant strategies.
+class LLMTuningTurboSession:
+    """Stateful KV cache manager combining LLMTuning + TurboQuant strategies.
 
     Key behaviours:
     1. Auto-selects TurboQuant precision (turbo4 for 32B/70B, turbo2 for 400B+)
     2. Boundary layer protection: first/last `boundary_n_layers` always at
        higher precision (mirrors TURBO_LAYER_ADAPTIVE=7 env var in llama.cpp)
     3. Thread-safe: prefetcher runs in separate thread (disk I/O overlapped
-       with GPU compute, same approach as AirLLM)
+       with GPU compute, same approach as LLMTuning)
     4. Memory tracking: measures compressed vs uncompressed size per layer
 
     Args:
@@ -563,7 +563,7 @@ class AirLLMTurboSession:
 
         lines = [
             "=" * 60,
-            "AirLLM + TurboQuant Hybrid Session Report",
+            "LLMTuning + TurboQuant Hybrid Session Report",
             "=" * 60,
             f"  Model size:        {self.model_size_b:.0f}B",
             f"  Layers:            {self.num_layers}",
@@ -575,7 +575,7 @@ class AirLLMTurboSession:
             f"  Boundary protect:  first/last {policy.boundary_n_layers} layers @ turbo{policy.boundary_k_bits}",
             f"  Sparse V:          last call skipped {sparse_pct:.1f}% of V positions",
             "",
-            f"  — AirLLM Pipeline Config —",
+            f"  — LLMTuning Pipeline Config —",
             f"  Layer prefetch:    ThreadPoolExecutor (disk → RAM, Thread 1)",
             f"  Async compress:    ThreadPoolExecutor (KV compress, Thread 3)",
             f"  Max context:       {policy.max_context}",
@@ -635,7 +635,7 @@ class AirLLMTurboSession:
 
         lines = [
             "=" * 60,
-            "AirLLM + TurboQuant KV Cache Session Report",
+            "LLMTuning + TurboQuant KV Cache Session Report",
             "=" * 60,
             f"  Model size:        {self.model_size_b:.0f}B",
             f"  Layers:            {self.num_layers}",

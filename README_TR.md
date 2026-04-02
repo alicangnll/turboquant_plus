@@ -45,18 +45,18 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 ## Performans ve Kalite (M5 Max 128GB)
 
-| Önbellek Tipi | Bit/Değer | Sıkıştırma | PPL (Kalite) | q8_0 Kıyas |
-|---------------|-----------|------------|--------------|------------|
-| q8_0 (Varsayılan)| 8.5 | 1.9x | 6.111 | Referans |
-| **turbo4** | **4.25** | **3.8x** | **6.125** | **+0.23%** |
-| turbo3 | 3.5 | 4.6x | 6.176 | +1.06% |
-| turbo2 | 2.5 | 6.4x | 6.507 | +6.48% |
+| Önbellek Tipi     | Bit/Değer | Sıkıştırma | PPL (Kalite) | q8_0 Kıyas |
+| ----------------- | --------- | ---------- | ------------ | ---------- |
+| q8_0 (Varsayılan) | 8.5       | 1.9x       | 6.111        | Referans   |
+| **turbo4**        | **4.25**  | **3.8x**   | **6.125**    | **+0.23%** |
+| turbo3            | 3.5       | 4.6x       | 6.176        | +1.06%     |
+| turbo2            | 2.5       | 6.4x       | 6.507        | +6.48%     |
 
 > **Not:** M1, M2 ve M3 işlemcilerde `turbo4`, eski nesil L2 önbellek darboğazını aşarak q8_0'a göre **%33.9** daha hızlı okuma performansı sağlar.
 
-## AirLLM + TurboQuant Hibrit Pipeline
+## LLMTuning + TurboQuant Hibrit Pipeline
 
-32B ve üzeri devasa modelleri Apple Silicon üzerinde çalıştırmak için AirLLM'in "katman parçalama" stratejisi ile TurboQuant birleştirilmiştir. **3 aşamalı asenkron pipeline** yapısı şöyledir:
+32B ve üzeri devasa modelleri Apple Silicon üzerinde çalıştırmak için LLMTuning'in "katman parçalama" stratejisi ile TurboQuant birleştirilmiştir. **3 aşamalı asenkron pipeline** yapısı şöyledir:
 
 1.  **Aşama 1 (Disk I/O)**: `LayerPrefetcher` bir sonraki katmanı RAM'e yükler.
 2.  **Aşama 2 (GPU Hesaplama)**: Aktif katman GPU üzerinde çıkarım yapar.
