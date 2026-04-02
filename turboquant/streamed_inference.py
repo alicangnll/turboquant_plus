@@ -275,7 +275,7 @@ class StreamedInferenceManager:
                 break
                 
             # Yeni input_ids'i ekle (Embedding)
-            next_hidden = torch.nn.functional.embedding(torch.tensor([[next_token_id]], device=self.device), embd_w)
+            next_hidden = torch.nn.functional.embedding(torch.tensor([[next_token_id]], device=self.device), self._embd_cached)
             current_hidden_state = torch.cat([current_hidden_state, next_hidden], dim=1)
                 
         print("\n") # Sohbet sonu
