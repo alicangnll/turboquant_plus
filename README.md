@@ -41,16 +41,21 @@ The latest TurboQuant+ engine includes significant architectural improvements fo
 ### 1. Memory Optimization Levels (VRAM & RAM Control)
 You can now choose between three operational modes at startup:
 - **Performance**: Maximum GPU usage, fast inference. Best for 32GB+ RAM.
-- **Balanced**: Optimized for 24-32GB systems. Uses 40% GPU budget.
+- **Balanced**: Optimized for 24-32GB systems (M-Pro series). Uses 30-40% GPU budget.
 - **Ultra-Eco**: Safe for 8-16GB systems. Minimal GPU, Duo-2bit cache, 512 context.
 
-### 2. Hybrid KV Cache (`turbo4` + `turbo2`)
+### 2. Dual Acceleration: Metal + OpenMP
+The engine now detects and leverages both Apple Metal (GPU) and OpenMP (CPU) simultaneously. 
+- **GPU**: Handles the transformer layers and KV cache arithmetic.
+- **CPU**: Performance Cores (P-Cores) are automatically isolated for background KV compression and Walsh-Hadamard rotations, preventing UI stuttering and maximizing throughput.
+
+### 3. Hybrid KV Cache (`turbo4` + `turbo2`)
 TurboQuant now leverages independent precision for Key and Value tensors. Keeping **K-cache** at 4-bit (`turbo4`) preserves attention intelligence, while compressing **V-cache** at 2-bit (`turbo2`) drastically reduces wired memory footprint.
 
-### 3. Hardware-Aware NGL Automation
+### 4. Hardware-Aware NGL Automation
 The engine automatically detects your platform's `recommendedMaxWorkingSetSize` (Metal Budget) and calculates the safest number of GPU layers (`-ngl`) to prevent system freezes and Metal OOM asserts.
 
-### 4. Smart MMAP Strategy
+### 5. Smart MMAP Strategy
 For models larger than physical RAM (32B, 100B, 500B), the engine uses intelligent memory mapping (mmap) instead of fixed loading. This enables stable operation via **NVMe SSD Swap** when the model size exceeds unified memory.
 
 ## Status: v1 Complete, Speed Optimized, Community-Tested
@@ -404,7 +409,11 @@ python3 benchmarks/validate_real_model.py
 
 ### AirLLM + TurboQuant Hybrid Python Pipeline
 
-Two new modules implement AirLLM's layer-sharding strategy with TurboQuant KV compression in pure NumPy (no GPU/CUDA required, works on Apple Silicon via MPS or CPU):
+Two new modules implement AirLLM's layer-sharding strategy with TurboQuant KV compression in pure NumPy (no GPU/CUDA required, works on Apple Silicon via MPS or CPU). It implements a **true 3-stage asynchronous pipeline**:
+
+1.  **Thread 1 (Disk I/O)**: `LayerPrefetcher` pre-loads the next layer weights into RAM while the current layer is being processed.
+2.  **Thread 2 (GPU/Compute)**: The active layer performs inference on the current raw tensors.
+3.  **Thread 3 (CPU Compress)**: `KVCompressionWorker` compresses the KV cache of the *previous* layer in the background using idle P-Cores, overlapping compute and I/O.
 
 #### `turboquant/airllm_bridge.py`
 
@@ -413,7 +422,8 @@ Inspired by AirLLM's core insight: process transformer layers one at a time, fre
 - **`AirLLMTurboSession`**: Stateful KV manager, auto-selects `turbo4` for 8B–100B and `turbo2` for 400B+
 - **`LayerPrefetcher`**: Mirrors AirLLM's `ThreadPoolExecutor` prefetch (overlaps disk I/O with GPU compute)
 - **`CachePolicy`** + `policy_for_model_size()`: Maps model size → optimal `k_bits`, `v_bits`, `max_context`
-- Boundary layer protection: first/last 2 layers always at higher precision (mirrors `TURBO_LAYER_ADAPTIVE=7`)
+- **Boundary layer protection**: first/last 2 layers always at higher precision (mirrors `TURBO_LAYER_ADAPTIVE=7`)
+- **Sparse V**: Attention-gated decompression — positions where softmax weight < threshold are skipped entirely.
 
 #### `turboquant/streamed_inference.py`
 
@@ -548,7 +558,9 @@ turboquant/
 ├── lloyd_max.py       # Lloyd-Max quantizer implementation
 ├── utils.py           # Bit packing, memory measurement
 ├── isoquant.py        # IsoQuant (quaternion SO(4)) experimental comparison
-└── rotorquant.py      # RotorQuant experimental comparison
+├── rotorquant.py      # RotorQuant experimental comparison
+├── hw_replay.py       # Hardware diagnostic profiling and performance prediction
+└── gguf_reader.py     # Lightweight GGUF partial loader for layer-sharding
 
 tests/                 # 14 test files, 500+ tests
 benchmarks/

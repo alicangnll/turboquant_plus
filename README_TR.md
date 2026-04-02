@@ -1,52 +1,83 @@
-# TurboQuant+ Türkçe Kılavuz ve İnceleme
+# TurboQuant+ (Türkçe Kılavuz)
 
-TurboQuant, yerel LLM (Büyük Dil Modeli) çıkarımı sırasında "KV Cache" (Anahtar/Değer Belleği) kullanımını büyük ölçüde sıkıştıran bir teknolojidir. Bu repo `llama.cpp` için TurboQuant entegrasyonu ve Apple Metal üzerinden çeşitli donanım/model boyutları için optimize edilmiş demoları içerir.
+> ### [Başlangıç Rehberi](docs/getting-started.md) | [Yapılandırma Önerileri](docs/turboquant-recommendations.md) | [llama.cpp Çatallaması](https://github.com/TheTom/llama-cpp-turboquant)
 
-## Yeni Eklenen Optimizasyonlar ve Demo Detayları
+[TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) (ICLR 2026) algoritmasının gelişmiş bir uygulamasıdır. Yerel LLM çıkarımı (inference) için KV önbelleği (KV cache) sıkıştırmasına odaklanır ve orijinal makalenin ötesinde deneysel bulgular, performans optimizasyonları ve Apple Silicon özelinde iyileştirmeler içerir.
 
-Proje ana dizinindeki `./run_turboquant_demo.sh` betiğini çalıştırarak, doğrudan donanımınıza ve seçeceğiniz modele göre en iyi ayarları test edebilirsiniz. 
+## Projenin Amacı
 
-### 1. Model Seçenekleri ve Kolay Kurulum
-Demo betiği, test yapabilmeniz için size 5 farklı hazır model seçeneği sunar:
-- **1) Llama 3.1 8B Instruct (~5 GB)**: Hızlı ve genel kullanım için.
-- **2) Qwen 2.5 32B Instruct (~20 GB)**: Dengeli ve yüksek performanslı.
-- **3) Command R+ 104B (~43 GB)**: Apple Silicon üzerinde sınırları zorlayan yüksek kalite.
-- **4) Qwen 2.5 0.5B Instruct (~400 MB)**: Sadece hızlı doğrulamalar için.
-- **5) Llama-3-405B / 500B Sınıfı (~250 GB)**: Ekstrem bellek sıkıştırması ve NVMe takas alanı (SWAP) testi.
+Bu depo, `llama.cpp` için deneysel bir araştırma ve entegrasyon çalışma alanıdır. Amacımız; farklı donanımlarda karşılaştırılabilir kıyaslama verileri toplamak, KV sıkıştırma yaklaşımlarını doğrulamak ve kararlı hale gelen parçaları kademeli olarak ana `llama.cpp` projesine eklemektir.
 
-### 2. Bellek Optimizasyon Seviyeleri (VRAM & RAM Kontrolü)
-Artık her model için üç farklı çalışma modu seçebilirsiniz, böylece 24 GB veya 16 GB sistemlerde bile 32B/70B modellerini çalıştırabilirsiniz:
-- **1) Performance**: Maksimum GPU kullanımı, hızlı çıkarım. 32GB+ RAM önerilir.
-- **2) Balanced**: 24GB RAM (M-Pro serisi) için optimize edilmiştir. 512-1024 context.
-- **3) Ultra-Eco**: 8-16GB RAM için en güvenli moddur. Hem K hem V önbelleği 2-bit'e (`turbo2`) düşürülür, context 512 ile sınırlandırılır.
+## 🚀 2026 Motor Güncellemeleri: Stabilite ve Bellek Yönetimi
 
-### 3. Devasa Modeller İçin "Hibrid" ve "Smart MMAP" Çözümü
-32B, 100B ve 500B gibi devasa modellerde sistem donmalarını ve Metal budget hatalarını engellemek için script otomatik olarak şunları uygular:
-- **Hibrid Cache**: K-cache `turbo4` (zeka koruması), V-cache `turbo2` (bellek tasarrufu) olarak ayrılır.
-- **Auto-NGL**: Apple Metal sürücüsünün `recommendedMaxWorkingSetSize` limiti anlık okunarak en güvenli GPU katman sayısı otomatik hesaplanır.
-- **Smart MMAP**: `--no-mmap` yerine akıllı bellek eşleme kullanılarak RAM yetmediğinde sistemin SSD Swap üzerinden kilitlenmeden çalışması sağlanır.
+Yeni nesil TurboQuant+ motoru, Apple Silicon cihazlarda (8GB-24GB RAM) 32B'den 500B'ye kadar olan modellerin sistem kilitlenmeden çalıştırılabilmesi için kritik özellikler sunar:
 
-### 4. Apple Silicon L2 Cache Darboğazının Aşılması (`turbo4`)
-M1, M2 ve M3 serisi işlemcilerde `turbo3` sıkıştırması kullanıldığında eski nesil L2 önbellek yapısından dolayı darboğaz yaşanabiliyordu. Demo üzerinde yapılandırmalar **`--cache-type-k turbo4 --cache-type-v turbo4`** olarak ayarlanmıştır. `turbo4` M serilerinde temel q8_0 seviyesine göre **%33.9** oranında okuma performansı artışı sağlar!
+### 1. Bellek Optimizasyon Seviyeleri
+Başlangıçta üç farklı mod seçilebilir:
+- **Performance**: Maksimum GPU kullanımı. 32GB+ RAM sistemler için en hızlı seçenek.
+- **Balanced**: 24GB RAM (M-Pro serisi) için optimize edilmiştir. GPU bütçesinin %30-40'ını kullanır.
+- **Ultra-Eco**: 8-16GB RAM için güvenli mod. Minimal GPU, `turbo2` (2-bit) KV önbelleği ve 512 context limiti.
 
----
+### 2. Çift İvmelendirme: Metal + OpenMP
+Motor artık Apple Metal (GPU) ve OpenMP (CPU) donanımlarını aynı anda kullanır:
+- **GPU**: Transformer katmanlarını ve KV aritmetiğini işler.
+- **CPU**: Performans Çekirdekleri (P-Cores), arka planda KV sıkıştırma ve Walsh-Hadamard rotasyonları için izole edilir. Bu sayede arayüz takılmaları engellenir ve toplam işlem hızı artar.
 
-## AirLLM + TurboQuant Hibrit Python Modülleri
+### 3. Hibrit KV Önbelleği (`turbo4` + `turbo2`)
+Key (Anahtar) ve Value (Değer) tensörleri için bağımsız hassasiyet sunar. **K-cache**'in 4-bit (`turbo4`) olarak tutulması modelin zekasını korurken, **V-cache**'in 2-bit (`turbo2`) olarak sıkıştırılması bellek kullanımını dramatik şekilde düşürür.
 
-Bu repo artık `airllm` projesinin temel optimizasyon stratejisini, TurboQuant KV Cache sıkıştırmasıyla birleştiren yeni Python modülleri barındırıyor.
+### 4. Akıllı MMAP Stratejisi
+Fiziksel RAM'den büyük modeller (100B, 500B) için geliştirilen akıllı bellek eşleme sayesinde, RAM yetmediğinde sistemin SSD üzerinden **NVMe Swap** kullanarak kilitlenmeden çalışması sağlanır.
 
-- **AirLLM**: Modeli katman katman diske parçalar (sharding), aktif katman bittiğinde anında serbest bırakır.
-- **TurboQuant**: KV Cache belleğini 3.8–6.4× oranında sıkıştırır.
-- **Sonuç**: 32B model, bu yöntemle sadece **~2-4 GB aktif RAM** ile çalışabiliyor.
+## Temel Bulgular ve İnovasyonlar
 
----
+TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
+
+1.  **V sıkıştırması "bedavadır":** Value (Değer) önbelleğinin 2-bit'e kadar sıkıştırılması, Key (Anahtar) hassasiyeti korunduğu sürece model kalitesini bozmaz.
+2.  **Kalite kaybının kaynağı K sensörüdür:** Asimetrik yapılandırmalar (q8_0-K + turbo-V), zekayı korurken yüksek sıkıştırma sağlar.
+3.  **Sınır Katmanları Hassastır (Boundary V):** İlk 2 ve son 2 katmanın yüksek hassasiyette (q8_0) korunması, kalite kaybının %37-91'ini geri kazandırır. `TURBO_LAYER_ADAPTIVE=7` ile aktif edilir.
+
+## Performans ve Kalite (M5 Max 128GB)
+
+| Önbellek Tipi | Bit/Değer | Sıkıştırma | PPL (Kalite) | q8_0 Kıyas |
+|---------------|-----------|------------|--------------|------------|
+| q8_0 (Varsayılan)| 8.5 | 1.9x | 6.111 | Referans |
+| **turbo4** | **4.25** | **3.8x** | **6.125** | **+0.23%** |
+| turbo3 | 3.5 | 4.6x | 6.176 | +1.06% |
+| turbo2 | 2.5 | 6.4x | 6.507 | +6.48% |
+
+> **Not:** M1, M2 ve M3 işlemcilerde `turbo4`, eski nesil L2 önbellek darboğazını aşarak q8_0'a göre **%33.9** daha hızlı okuma performansı sağlar.
+
+## AirLLM + TurboQuant Hibrit Pipeline
+
+32B ve üzeri devasa modelleri Apple Silicon üzerinde çalıştırmak için AirLLM'in "katman parçalama" stratejisi ile TurboQuant birleştirilmiştir. **3 aşamalı asenkron pipeline** yapısı şöyledir:
+
+1.  **Aşama 1 (Disk I/O)**: `LayerPrefetcher` bir sonraki katmanı RAM'e yükler.
+2.  **Aşama 2 (GPU Hesaplama)**: Aktif katman GPU üzerinde çıkarım yapar.
+3.  **Aşama 3 (CPU Sıkıştırma)**: `KVCompressionWorker` bir önceki katmanın KV önbelleğini CPU çekirdeklerinde arka planda sıkıştırır.
+
+Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
 
 ## Nasıl Çalıştırılır?
 
-Ortamınızda Python 3.10+, cmake ve Xcode Command Line Tools kurulu olmalıdır. 
+### Gereksinimler
+- Python 3.10+
+- cmake ve C++ derleyici
+- Xcode Command Line Tools (macOS)
 
+### Hızlı Başlangıç (Demo)
 ```bash
+git clone https://github.com/TheTom/turboquant_plus.git
+cd turboquant_plus
+# Demo betiği OpenMP desteğini ve en iyi model ayarlarını otomatik yapılandırır
 ./run_turboquant_demo.sh
 ```
 
-Sorun yaşarsanız veya parametreleri özelleştirmek isterseniz `llama-cpp-turboquant` klasörü içerisinden `llama-cli` veya `llama-server` araçlarını kendiniz başlatabilirsiniz.
+### llama.cpp ile Kullanım
+Sunucu (server) veya CLI modunda `--cache-type-k turbo4 --cache-type-v turbo4` parametrelerini ekleyerek TurboQuant aktif edilebilir.
+
+---
+
+**Destek:** Bu projeyi beğendiyseniz [GitHub Sponsors](https://github.com/sponsors/TheTom) üzerinden destek olabilirsiniz.
+
+**Lisans:** Apache License 2.0. Copyright 2026 Tom Turney.
