@@ -92,14 +92,16 @@ echo ">>> [3/5] Select Memory Optimization Level:"
 echo "1) Performance (High GPU, fast, needs 32GB+ RAM)"
 echo "2) Balanced   (Moderate GPU, 24GB RAM safe)"
 echo "3) Ultra-Eco   (Minimal RAM, stable on 16GB systems)"
-read -p "Your choice (1/2/3) [Default: 2]: " mem_choice
+echo "4) Streaming   (AirLLM + TurboQuant - Best for 32B/70B/400B on <16GB)"
+read -p "Your choice (1/2/3/4) [Default: 2]: " mem_choice
 mem_choice=${mem_choice:-2}
 
 case "$mem_choice" in
-  1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
-  2) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
-  3) MEM_BUDGET_PCT=5; MEM_LABEL="Ultra-Eco" ;;
-  *) MEM_BUDGET_PCT=30; MEM_LABEL="Balanced" ;;
+  1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance"; ENGINE="llama.cpp" ;;
+  2) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced"; ENGINE="llama.cpp" ;;
+  3) MEM_BUDGET_PCT=10; MEM_LABEL="Ultra-Eco"; ENGINE="llama.cpp" ;;
+  4) MEM_BUDGET_PCT=0;  MEM_LABEL="Streaming"; ENGINE="airllm" ;;
+  *) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced"; ENGINE="llama.cpp" ;;
 esac
 
 # Detect Performance Cores (P-Cores) for Apple Silicon
@@ -129,26 +131,31 @@ case "$model_choice" in
     MODEL_NAME="Llama 3.1 8B"
     MODEL_URL="https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
     MODEL_FILE="models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+    SIZE_NUM=8
     ;;
   2|"32B"|"32b")
     MODEL_NAME="Qwen 2.5 32B"
     MODEL_URL="https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
     MODEL_FILE="models/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+    SIZE_NUM=32
     ;;
   3|"100B"|"100b")
     MODEL_NAME="Command R+ 104B"
     MODEL_URL="https://huggingface.co/mradermacher/c4ai-command-r-plus-08-2024-GGUF/resolve/main/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     MODEL_FILE="models/c4ai-command-r-plus-08-2024.Q2_K.gguf"
+    SIZE_NUM=104
     ;;
   5|"500B"|"500b")
     MODEL_NAME="Llama 3.1 405B (500B+ Class)"
     MODEL_URL="https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
     MODEL_FILE="models/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
+    SIZE_NUM=405
     ;;
   *)
     MODEL_NAME="Qwen 2.5 0.5B"
     MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
     MODEL_FILE="models/qwen2.5-0.5b-q4_k_m.gguf"
+    SIZE_NUM=0.5
     ;;
 esac
 
@@ -168,9 +175,21 @@ else
 fi
 
 
-# Part 4: Running the Model with TurboQuant Settings
-echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
+# Part 5: Running the Model
+echo ">>> [5/5] Starting the model ($ENGINE mode)..."
 
+if [[ "$ENGINE" == "airllm" ]]; then
+    echo ">>> Activating TurboQuant + AirLLM Streamed Pipeline..."
+    echo "    Model: $MODEL_NAME"
+    echo "    File:  $MODEL_FILE"
+    echo "    Mode: One-layer-at-a-time streaming (Peak RAM: <2 GB)"
+    python3 -m turboquant.streamed_inference --model "$MODEL_FILE" --size "$SIZE_NUM"
+    echo "-----------------------------------------------"
+    echo ">>> Streamed Session Completed."
+    exit 0
+fi
+
+# Direct llama-cli path (existing logic)
 if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
     echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
     EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8"
