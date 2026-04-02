@@ -43,11 +43,15 @@ mem_choice=${mem_choice:-2}
 
 case "$mem_choice" in
   1) MEM_BUDGET_PCT=80; MEM_LABEL="Performance" ;;
-  2) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced" ;;
-  3) MEM_BUDGET_PCT=10; MEM_LABEL="Ultra-Eco" ;;
-  *) MEM_BUDGET_PCT=40; MEM_LABEL="Balanced" ;;
+  2) MEM_BUDGET_PCT=35; MEM_LABEL="Balanced" ;;
+  3) MEM_BUDGET_PCT=5; MEM_LABEL="Ultra-Eco" ;;
+  *) MEM_BUDGET_PCT=35; MEM_LABEL="Balanced" ;;
 esac
+
+# Detect Performance Cores (P-Cores) for Apple Silicon
+THREADS=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 echo ">>> Memory Mode: $MEM_LABEL (Targeting $MEM_BUDGET_PCT% GPU weight budget)"
+echo ">>> CPU Optimization: Using $THREADS performance cores for inference."
 echo ""
 
 # Part 4: Downloading an Example Model
@@ -128,8 +132,11 @@ elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice
     echo "    Extra parameters: $EXTRA_ARGS"
 elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
     echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode..."
-    CTX=512; [ "$mem_choice" -eq 1 ] && CTX=1024
-    EXTRA_ARGS="-c $CTX -b 256 -ub 128"
+    # Drop context to 256 in Eco mode to save KV RAM
+    CTX=512
+    [ "$mem_choice" -eq 1 ] && CTX=1024
+    [ "$mem_choice" -eq 3 ] && CTX=256
+    EXTRA_ARGS="-c $CTX -b 128 -ub 64 -sm none"
     # Even in balanced, use turbo2 for V to save memory
     CACHE_TYPE_K="turbo4"
     CACHE_TYPE_V="turbo2"
@@ -271,13 +278,15 @@ echo "    KV cache (${CACHE_TYPE}, ctx=${CTX_LEN}): ~${KV_EST} MB"
 echo "    Safe GPU layers:   ${NGL}/${NUM_LAYERS}"
 
 # README recommends turbo4 to overcome M1/M2/M3 L2 Cache wall and accelerate dequantization
-# NGL auto-calculated: metal_budget - kv_cache - graph_overhead → prevents Metal OOM assert
-echo "Used parameters: -ngl ${NGL} $EXTRA_ARGS --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V"
-echo "-----------------------------------------------"
+# Enable OpenMP via Homebrew libomp
+export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
+export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/libomp/lib:$DYLD_LIBRARY_PATH"
 
 env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   -m "$MODEL_FILE" \
   -ngl "$NGL" \
+  -t "$THREADS" \
   $EXTRA_ARGS \
   -fa on \
   --cache-type-k "$CACHE_TYPE_K" \
