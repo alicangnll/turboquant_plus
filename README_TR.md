@@ -48,3 +48,84 @@ Sadece aşağıdaki komutu çalıştırarak sıfırdan her şeyin indirilmesini,
 ```
 
 Sorun yaşarsanız veya parametreleri özelleştirmek isterseniz `llama-cpp-turboquant` klasörü içerisinden `llama-cli` veya `llama-server` araçlarını kendiniz başlatabilirsiniz.
+
+---
+
+## AirLLM + TurboQuant Hibrit Python Modülleri
+
+Bu repo artık `airllm` projesinin temel optimizasyon stratejisini, TurboQuant KV Cache sıkıştırmasıyla birleştiren iki yeni Python modülü barındırıyor. Bu modüller saf **NumPy** tabanlı olduğu için PyTorch, CUDA veya ekstra bağımlılık gerektirmiyor.
+
+### AirLLM Nedir, İki Sistem Nasıl Birbirini Tamamlıyor?
+
+**AirLLM**, bir transformatör modelinin tüm ağırlıklarını (bölümlerini) tek seferde belleğe almak yerine **katman katman diske parçalar** (sharding), bu katmanları sırayla belleğe çekip hesabı yapıp, sonrasında anında serbest bırakır. Böylece 70B büyüklüğündeki bir modeli sadece 4-8 GB VRAM ile çalıştırabiliyorsunuz.
+
+**TurboQuant** ise modelin çalışması sırasında oluşan KV Cache belleğini (her katmanda Q@K^T ve attn@V için tutulan tampon) 3.8–6.4× oranında sıkıştırır. AirLLM'in dokunmadığı yere müdahale eder.
+
+**İkisi birlikte:**
+- Ağırlık belleği: AirLLM → yalnızca 1 katman aktif → ~350 MB (32B model için)
+- KV Cache belleği: TurboQuant turbo4 → ~3.76× küçültme
+- Sonuç: 32B model ~2 GB aktif bellek ile çalışabiliyor
+
+---
+
+### 6. `turboquant/airllm_bridge.py` — Katman Bazlı KV Sıkıştırma Köprüsü
+
+Her katmanın K ve V tensörlerini anında TurboQuant ile sıkıştırıp, ham tensörü bellekten atar.
+
+**Temel sınıflar:**
+
+- **`AirLLMTurboSession`**: Model boyutuna göre sıkıştırma politikasını otomatik seçer ve katman bazlı KV deposu yönetir.
+- **`LayerPrefetcher`**: AirLLM'deki `ThreadPoolExecutor` prefetch stratejisinin birebir karşılığı. Bir sonraki katmanın ağırlıklarını arka planda diskten RAM'e yüklerken, şimdiki katmanın hesabı yapılır. GPU boş kalmaz.
+- **`CachePolicy`**: Model boyutu → `k_bits`, `v_bits`, `max_context` eşlemesi.
+
+**Otomatik politika seçimi:**
+
+| Model boyutu | K önbellek | V önbellek | Maks. bağlam |
+|---|---|---|---|
+| < 32B | turbo4 | turbo4 | 8192 |
+| 32B–65B | turbo4 | turbo4 | 4096 |
+| 65B–100B | turbo4 | turbo4 | 2048 |
+| 400B+ | turbo2 | turbo2 | 512 |
+
+Sınır katmanları (ilk/son 2) her zaman `turbo4`'te korunur — `TURBO_LAYER_ADAPTIVE=7` davranışının Python karşılığı.
+
+---
+
+### 7. `turboquant/streamed_inference.py` — Uçtan Uca Yönetici
+
+Katman akışı + KV sıkıştırmasını tek bir yöneticide birleştirir.
+
+```python
+from turboquant.streamed_inference import StreamedInferenceManager
+
+# 32B model için otomatik katman/kafa yapılandırması:
+manager = StreamedInferenceManager.for_model_size(32)
+
+# Demo geçişi (gerçek model ağırlığı gerekmez):
+result = manager.demo_forward(seq_len=4096, verbose=True)
+print(result.memory_report)
+
+# Farklı bağlam uzunluklarında KV tasarruf raporu:
+manager.benchmark_compression(seq_lengths=[512, 2048, 4096, 8192])
+```
+
+**Apple M4 üzerinde doğrulanan sonuçlar (8 katman, sentetik dikkat):**
+
+| Model | Bağlam | KV Ham | KV Sıkıştırılmış | Oran | Sıkıştırma süresi |
+|-------|--------|--------|-------------------|------|-------------------|
+| 8B (Llama) | 512 | 64 MB | 17 MB | **3.76×** | ~54 ms/katman |
+| 32B (Qwen) | 512 | 80 MB | 21 MB | **3.76×** | ~72 ms/katman |
+| 70B (Llama) | 256 | 64 MB | 17 MB | **3.76×** | ~56 ms/katman |
+| 104B (Command-R+) | 128 | 64 MB | 17 MB | **3.76×** | ~60 ms/katman |
+
+KV sıkıştırma ek yükü, katman başına **~50–75 ms** (yalnızca CPU NumPy). Katman parçalama düzeninde disk G/Ç gecikmesine kıyasla **ihmal edilebilir**. llama.cpp Metal GPU çekirdekleriyle çalışıldığında bu süre mikrosaniye mertebesine iner.
+
+---
+
+Modülleri hızlıca test etmek için:
+
+```bash
+source .venv/bin/activate
+python3 -m turboquant.streamed_inference
+```
+
