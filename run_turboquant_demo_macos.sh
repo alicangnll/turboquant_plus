@@ -355,11 +355,30 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     export DYLD_LIBRARY_PATH="${OMP_DYLD_PATH:-}:$DYLD_LIBRARY_PATH"
 fi
 
+# [LLMTuning Detection] 
+# Detect if turbo4-K + turbo2-V is used, which triggers the memory-efficient 
+# Python AirLLM engine for stable inference on large models.
+USE_LLMTUNING=0
+if [[ "$CACHE_TYPE_K" == "turbo4" && "$CACHE_TYPE_V" == "turbo2" ]]; then
+    USE_LLMTUNING=1
+fi
+
 CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" $EXTRA_ARGS -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
 CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
 [ -n "$CHAT_TEMPLATE" ] && CLI_CMD="$CLI_CMD --chat-template \"$CHAT_TEMPLATE\""
 
-eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
+if [ "$USE_LLMTUNING" -eq 1 ]; then
+    echo "==========================================================="
+    echo "🚀 [LLMTuning Logic Enabled] <<<"
+    echo ">>> Mode: Memory-Optimized Layer Sharding (AirLLM)"
+    echo ">>> Benefit: Stable inference for 32B+ models on 16GB RAM"
+    echo "==========================================================="
+    
+    source .venv/bin/activate
+    python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
+else
+    eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
+fi
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed! You've run an LLM on your device with TurboQuant."

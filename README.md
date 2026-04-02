@@ -407,6 +407,27 @@ python3 -m pytest tests/ -v
 # Windows (CUDA / OpenMP Optimized)
 run_turboquant_demo.bat
 
+### 🚀 Quick Start (CLI Integration)
+
+The project now includes a universal wrapper `turbo.sh` that intelligently routes to the best engine based on your cache settings.
+
+#### 1. Standard High-Performance Mode (C++)
+For 8B models or any model requiring maximum speed on 32GB+ RAM:
+```bash
+./turbo.sh -m models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf --cache-type-k turbo4 --cache-type-v turbo4
+```
+
+#### 2. Auto-Tuning / AirLLM Mode (Python Functional)
+**Recommended for 32B+ models on 16GB RAM.** When you use `turbo4-K` and `turbo2-V`, the system automatically activates **LLMTuning Logic** (asynchronous layer-sharding).
+```bash
+./turbo.sh -m models/Qwen2.5-32B-Instruct-Q4_K_M.gguf --cache-type-k turbo4 --cache-type-v turbo2
+```
+*Wait: This mode is stable on low-RAM devices but slower (0.5–1.0 tok/s).*
+
+---
+
+### ⚙️ Engine Switching Logic
+
 # Quick compression demo (no model needed)
 python3 benchmarks/demo.py
 

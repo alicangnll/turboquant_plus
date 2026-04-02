@@ -28,7 +28,7 @@ Combined peak memory for 32B (64 layers, 40 heads, d=128, ctx=4096):
   - With:    ~350 MB (1 layer) + ~675 MB (KV compressed) = ~1 GB active
 
 Usage:
-    from turboquant.LLMTuning_bridge import LLMTuningTurboSession
+    from turboquant.llmtuning_bridge import LLMTuningTurboSession
 
     session = LLMTuningTurboSession(model_size_b=32, num_layers=64,
                                   num_heads=40, head_dim=128)
@@ -339,6 +339,14 @@ class LLMTuningTurboSession:
         self._total_compressed_bytes += lkv.approx_bytes(self.head_dim)
         self._kv_store[layer_idx] = lkv
         return lkv
+
+    def compress(self, k: np.ndarray, v: np.ndarray, layer_idx: int) -> LayerKV:
+        """Alias for compress_layer_kv."""
+        return self.compress_layer_kv(layer_idx, k, v)
+
+    def decompress(self, lkv: LayerKV) -> tuple[np.ndarray, np.ndarray]:
+        """Alias for restore_layer_kv."""
+        return self.restore_layer_kv(lkv.layer_idx, lkv)
 
     def restore_layer_kv(
         self,

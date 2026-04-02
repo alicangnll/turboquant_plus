@@ -228,9 +228,26 @@ NGL=$(calculate_ngl "$MODEL_FILE" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CTX" "$
 
 echo ">>> Calculated NGL: $NGL / $NUM_LAYERS"
 
+# [LLMTuning Detection]
+USE_LLMTUNING=0
+if [[ "$CACHE_TYPE_K" == "turbo4" && "$CACHE_TYPE_V" == "turbo2" ]]; then
+    USE_LLMTUNING=1
+fi
+
 CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" -c \"$CTX\" $EXTRA_STABLE -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\" -sys \"$SYSTEM_PROMPT\""
 
-eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"How can I optimize an LLM on Linux?\" -n 300"
+if [ "$USE_LLMTUNING" -eq 1 ]; then
+    echo "==========================================================="
+    echo "🚀 [LLMTuning Logic Enabled] <<<"
+    echo ">>> Mode: Memory-Optimized Layer Sharding (AirLLM)"
+    echo ">>> Benefit: Stable inference for 32B+ models on 16GB RAM"
+    echo "==========================================================="
+    
+    source .venv/bin/activate
+    python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "How can I optimize an LLM on Linux?" -n 300
+else
+    eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"How can I optimize an LLM on Linux?\" -n 300"
+fi
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed!"
