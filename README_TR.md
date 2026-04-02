@@ -64,6 +64,9 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
 
+> [!TIP]
+> Daha fazla mimari detay, bileşen haritası ve veri akış diyagramı için [MAP.md](MAP.md) dosyasına göz atabilirsiniz.
+
 ### GPT-OSS-20B (MoE) Desteği
 `openai/gpt-oss-20b` sınıfı tarafından kullanılan **Mixture of Experts (MoE)** mimarisi için tam destek entegre edilmiştir. Demo betiklerimiz, 24 katmanlı MoE parametrelerini (8 KV kafası) bu modeller için belleği optimize edecek şekilde otomatik olarak yapılandırır.
 

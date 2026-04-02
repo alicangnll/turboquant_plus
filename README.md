@@ -16,6 +16,7 @@ If individual pieces prove useful and stable, the intent is to upstream them inc
 - Benchmark and quality validation across models, contexts, and hardware
 - Backend-specific implementation work and performance experiments
 - Documentation and writeups intended to make testing and reproduction easier
+- **Architectural Map**: Detailed component interactions and data flow can be found in [MAP.md](MAP.md)
 - Candidate ideas that may be worth upstreaming individually if they prove stable
 
 ## Current Findings
