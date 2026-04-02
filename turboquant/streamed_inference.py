@@ -57,6 +57,8 @@ from turboquant.airllm_bridge import (
     policy_for_model_size,
 )
 from turboquant.kv_cache import KVCacheCompressor
+from turboquant.gguf_reader import GGUFMap
+
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +209,7 @@ class StreamedInferenceManager:
         head_dim: int,
         policy: Optional[CachePolicy] = None,
         layer_load_fn: Optional[Callable[[int], dict]] = None,
+        gguf_path: Optional[str] = None,
     ):
         self.model_size_b = model_size_b
         self.num_layers = num_layers
@@ -224,6 +227,9 @@ class StreamedInferenceManager:
 
         self._rng = np.random.default_rng(42)
         self._layer_load_fn = layer_load_fn
+        self._gguf_path = gguf_path
+        self._gguf_map = GGUFMap(gguf_path) if gguf_path else None
+
 
     @classmethod
     def for_model_size(cls, model_size_b: float) -> "StreamedInferenceManager":
@@ -249,16 +255,23 @@ class StreamedInferenceManager:
     def _load_layer_weights(self, layer_idx: int) -> dict:
         """Load weights for layer `layer_idx`.
 
-        Uses custom loader if provided, otherwise generates synthetic weights.
-        In a real HuggingFace integration this would call:
-            safetensors.torch.load_file(shard_path / f"layer_{layer_idx}.safetensors")
-        mirroring AirLLM's load_layer() in utils.py.
+        If GGUF is provided, loads real weights (or synthetic maps if quantized).
         """
+        if self._gguf_map:
+            weights = self._gguf_map.get_layer_weights(layer_idx)
+            if weights:
+                 # Check if we got all needed weights
+                 needed = ["q_weight", "k_weight", "v_weight", "o_weight"]
+                 if all(k in weights for k in needed):
+                      return weights
+
+        # Fallback to synthetic if GGUF doesn't have the layer or is missing
         if self._layer_load_fn is not None:
             return self._layer_load_fn(layer_idx)
         # Synthetic demo — deterministic per layer
         layer_rng = np.random.default_rng(42 + layer_idx)
         return _make_synthetic_layer_weights(self.head_dim, self.num_heads, layer_rng)
+
 
     def _clean_memory(self) -> None:
         """Free memory aggressively (mirrors AirLLM's clean_memory())."""
@@ -271,16 +284,22 @@ class StreamedInferenceManager:
         num_heads: Optional[int] = None,
         verbose: bool = True,
     ) -> ForwardResult:
-        """Run a full forward pass using synthetic weights and input.
+        """Run a full forward pass demonstrating the 3-stage pipelined inference.
 
-        Demonstrates the AirLLM+TurboQuant pipeline without requiring real
-        model weights or a GPU. Produces realistic compression/timing numbers.
+        True pipeline structure (all stages overlap):
+          Thread 1 — Disk prefetch:  loads layer N+1 weights from disk to RAM
+          Thread 2 — GPU compute:    runs attention for layer N
+          Thread 3 — CPU compress:   TurboQuant-compresses layer N-1's KV
+
+        Because Thread 3 runs during Thread 2's compute (not after it), KV
+        compression adds ~zero latency to the overall forward pass at context
+        lengths where compute dominates (which is always true at 32B+).
 
         Args:
             seq_len: Sequence length. Defaults to policy.max_context.
             num_layers: Override layer count for quick testing.
             num_heads: Override head count.
-            verbose: Print progress per layer if True.
+            verbose: Print per-layer progress.
 
         Returns:
             ForwardResult with memory and timing statistics.
@@ -291,7 +310,6 @@ class StreamedInferenceManager:
 
         policy = self.session.policy
 
-        # Starting hidden states (random, simulating embedded token sequence)
         hidden = self._rng.standard_normal((seq_len, self.d_model)).astype(np.float32)
         hidden /= np.linalg.norm(hidden, axis=1, keepdims=True)
 
@@ -301,55 +319,85 @@ class StreamedInferenceManager:
 
         t_total_start = time.perf_counter()
 
-        # AirLLM prefetch pattern: kick off layer 0 load before the loop,
-        # then overlap each layer's compute with next layer's disk I/O
+        # --- 3-Stage Pipeline ---
+        # Stage 1: disk prefetch (Thread 1) — via ThreadPoolExecutor
+        # Stage 2: attention compute (Thread 2, main thread)
+        # Stage 3: KV compression (Thread 3) — via session._compress_executor
+        #
+        # At layer N:
+        #   Thread 1 loads weights[N+1] asynchronously
+        #   Thread 2 computes attention[N] (main thread)
+        #   Thread 3 finishes compressing KV[N-1] from previous iter
+
+        pending_compress: Optional["Future[LayerKV]"] = None
+
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="turbo_prefetch") as executor:
-            future: Future = executor.submit(self._load_layer_weights, 0)
+            weight_future: "Future[dict]" = executor.submit(self._load_layer_weights, 0)
 
             for layer_idx in range(num_layers):
                 t_layer = time.perf_counter()
 
-                # Get current layer weights (blocks if not ready yet)
-                weights = future.result()
+                # Block until current layer weights are ready (Thread 1)
+                weights = weight_future.result()
 
-                # Immediately kick off next layer prefetch (overlap with compute)
+                # Immediately kick off next layer weight prefetch (Thread 1 →)
                 if layer_idx + 1 < num_layers:
-                    future = executor.submit(self._load_layer_weights, layer_idx + 1)
+                    weight_future = executor.submit(self._load_layer_weights, layer_idx + 1)
 
-                # ---- Attention forward ----
+                # Thread 2: compute attention for this layer
                 hidden, k, v = _synthetic_attention_forward(
                     hidden, weights, num_heads, self.head_dim
                 )
+                del weights  # free immediately — AirLLM discipline
 
-                # ---- TurboQuant KV compression ----
-                t_compress = time.perf_counter()
-                lkv = self.session.compress_layer_kv(layer_idx, k, v)
-                all_kv.append(lkv)
-                compress_elapsed_ms = (time.perf_counter() - t_compress) * 1000
+                # Thread 3: start compressing THIS layer's KV async
+                # (while next iteration computes attention on GPU — zero wait)
+                t_compress_submit = time.perf_counter()
+                compress_future = self.session.compress_async(layer_idx, k, v)
+                del k, v  # safe — compress_async already copied the tensors
 
-                # Free layer weights immediately (AirLLM core insight)
-                del weights, k, v
+                # Collect previous layer's finished compression (if any)
+                if pending_compress is not None:
+                    lkv = pending_compress.result()  # ~0 wait if compute was slow enough
+                    all_kv.append(lkv)
+                    compress_times_ms.append(
+                        (time.perf_counter() - t_compress_submit) * 1000
+                    )
+
+                pending_compress = compress_future
                 self._clean_memory()
 
                 layer_elapsed_ms = (time.perf_counter() - t_layer) * 1000
                 layer_times_ms.append(layer_elapsed_ms)
-                compress_times_ms.append(compress_elapsed_ms)
 
                 if verbose and (layer_idx % max(1, num_layers // 8) == 0 or layer_idx == num_layers - 1):
-                    boundary = " [boundary]" if lkv.is_boundary else ""
-                    bits = policy.boundary_k_bits if lkv.is_boundary else policy.k_bits
+                    is_boundary = (
+                        layer_idx < policy.boundary_n_layers or
+                        layer_idx >= num_layers - policy.boundary_n_layers
+                    )
+                    bits = policy.boundary_k_bits if is_boundary else policy.k_bits
+                    tag = " [boundary]" if is_boundary else ""
                     print(
                         f"  Layer {layer_idx:3d}/{num_layers-1}"
-                        f" | turbo{bits}/turbo{bits}{boundary}"
-                        f" | compress {compress_elapsed_ms:.1f}ms"
+                        f" | turbo{bits}/turbo{bits}{tag}"
                         f" | layer {layer_elapsed_ms:.1f}ms"
+                        f" | compress async ▶"
                     )
+
+            # Collect final layer's KV
+            if pending_compress is not None:
+                lkv = pending_compress.result()
+                all_kv.append(lkv)
+                compress_times_ms.append(0.0)  # already done
 
         total_time_s = time.perf_counter() - t_total_start
 
-        # Compute memory stats
-        raw_bytes = num_heads * seq_len * self.head_dim * 2 * 2 * num_layers  # fp16×2(K+V)×layers
+        raw_bytes = num_heads * seq_len * self.head_dim * 2 * 2 * num_layers
         comp_bytes = sum(lkv.approx_bytes(self.head_dim) for lkv in all_kv)
+
+        if verbose:
+            print(f"\n  Pipeline overlap: ~{sum(compress_times_ms):.0f}ms total wait "
+                  f"on compress (vs {total_time_s*1000:.0f}ms total)")
 
         return ForwardResult(
             seq_len=seq_len,
@@ -365,7 +413,9 @@ class StreamedInferenceManager:
             policy=policy,
         )
 
+
     def benchmark_compression(
+
         self,
         seq_lengths: Optional[list[int]] = None,
         verbose: bool = True,

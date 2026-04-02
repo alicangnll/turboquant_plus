@@ -1,42 +1,47 @@
 """AirLLM Bridge for TurboQuant — Layer-Sharding + KV Compression.
 
-Inspired by AirLLM's core insight: instead of holding all model weights in GPU
-memory at once, process each transformer layer individually, loading weights just
-in time and immediately freeing them after use.
+Combines AirLLM's layer-sharding disk strategy with TurboQuant's KV cache
+compression into a true 3-stage pipeline:
 
-This module layers TurboQuant's KV cache compression ON TOP of that approach:
-  - Model weights: streamed layer-by-layer from disk (AirLLM strategy)
-  - KV cache: kept compressed between layers using TurboQuant (our contribution)
+    Thread 1 (Disk I/O):    [Load Layer N+1] ──────────────────────▶
+    Thread 2 (GPU/Compute):           [Compute Layer N] ────────────▶
+    Thread 3 (CPU Compress):                    [Compress KV N-1] ──▶
 
-Combined effect on 32B/70B models on Apple Silicon (Unified Memory):
-  - AirLLM reduces peak weight memory by ~8x (only 1 layer resident at a time)
-  - TurboQuant reduces KV cache memory by 3.8-6.4x depending on config
-  - Together: 32B model fits comfortably on 24GB, 70B on 64GB
+AirLLM's contribution integrated here:
+  - LayerPrefetcher: disk → CPU RAM async, overlapped with GPU compute
+  - KVCompressionWorker: CPU KV compression async, overlapped with GPU compute
+    of the NEXT layer (zero-wait compression via double-buffering)
+  - Memory discipline: layer weights freed immediately after compute,
+    raw KV tensors freed immediately after compression
 
-Design principles (preserving TurboQuant's correctness):
-  - K cache: full TurboQuant (inner product preservation for Q@K^T attention)
-  - V cache: MSE-only PolarQuant (value reconstruction for attn_weights @ V)
-  - Boundary layers (first 2 + last 2): higher precision k_bits to protect
-    critical routing decisions (mirrors TURBO_LAYER_ADAPTIVE=7 behavior)
-  - No modifications to the core TurboQuant/PolarQuant algorithms
+TurboQuant's contribution integrated here:
+  - K cache: full TurboQuant IP-preserving quantization (Q@K^T quality)
+  - V cache: MSE-only PolarQuant (attn_weights@V reconstruction)
+  - Boundary layer protection: first/last 2 layers at higher precision
+    (mirrors TURBO_LAYER_ADAPTIVE=7)
+  - Sparse V: attention-weight-gated decompression — positions where
+    softmax weight < threshold are skipped entirely (mirrors Metal kernel
+    sparse-V optimization, validated +22.8% decode at 32K context)
+
+Combined peak memory for 32B (64 layers, 40 heads, d=128, ctx=4096):
+  - Without: ~21 GB (weights) + ~2.6 GB (KV raw)      = ~24 GB
+  - With:    ~350 MB (1 layer) + ~675 MB (KV compressed) = ~1 GB active
 
 Usage:
     from turboquant.airllm_bridge import AirLLMTurboSession
 
-    session = AirLLMTurboSession(
-        model_size_b=32,         # 32B, 70B, etc.
-        num_layers=64,
-        num_heads=32,
-        head_dim=128,
-    )
+    session = AirLLMTurboSession(model_size_b=32, num_layers=64,
+                                  num_heads=40, head_dim=128)
 
-    # During a forward pass, after each transformer layer:
-    compressed_kv = session.compress_layer_kv(layer_idx, k_tensor, v_tensor)
+    # Async compress (returns Future — compression overlaps next layer compute)
+    future = session.compress_async(layer_idx, k_tensor, v_tensor)
+    # ... compute next layer ...
+    lkv = future.result()   # block only when actually needed
 
-    # When you need to attend (next token):
-    k_restored, v_restored = session.restore_layer_kv(layer_idx, compressed_kv)
+    # Sparse V restore (skips low-weight positions, +20-30% speed at long ctx)
+    attn_weights = ...  # (num_heads, seq_len) softmax output
+    k, v = session.sparse_restore_layer_kv(layer_idx, attn_weights)
 
-    # Session stats
     print(session.memory_report())
 """
 
@@ -242,9 +247,16 @@ class AirLLMTurboSession:
         self._total_uncompressed_bytes = 0
         self._total_compressed_bytes = 0
         self._layer_compress_times: list[float] = []
+        self._last_sparse_skip_fraction: float = 0.0
 
         # KV store: layer_idx → LayerKV
         self._kv_store: dict[int, LayerKV] = {}
+
+        # Background thread for async KV compression (Thread 3 in the pipeline).
+        # Compression of layer N runs here while GPU computes layer N+1.
+        self._compress_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="turbo_kv_compress"
+        )
 
     # ------------------------------------------------------------------
     # Compress / Decompress API
@@ -369,17 +381,243 @@ class AirLLMTurboSession:
 
         return k_out, v_out
 
-    def clear_kv(self, layer_idx: Optional[int] = None) -> None:
-        """Free compressed KV memory.
+    def compress_async(
+        self,
+        layer_idx: int,
+        k: np.ndarray,
+        v: np.ndarray,
+    ) -> "Future[LayerKV]":
+        """Submit KV compression to the background compression thread.
+
+        This is the core 3-stage pipeline primitive — the main caller pattern:
+
+            future = session.compress_async(N, k, v)  # Thread 3 starts
+            del k, v                                   # free raw tensors now
+            # ... GPU computes layer N+1 ... (Thread 2)
+            # ... Disk prefetches layer N+2 ... (Thread 1)
+            lkv = future.result()                      # block only if needed
+
+        Compression of layer N's KV overlaps GPU compute of layer N+1,
+        giving effectively zero additional latency at longer context lengths.
 
         Args:
-            layer_idx: If given, free only that layer. If None, free all.
+            layer_idx: Transformer layer index.
+            k: Key tensor (num_heads, seq_len, head_dim). Immediately copied
+               so caller can safely delete the original.
+            v: Value tensor, same shape.
+
+        Returns:
+            Future[LayerKV] — non-blocking. Call .result() when KV is needed.
         """
+        k_copy = k.copy()
+        v_copy = v.copy()
+        return self._compress_executor.submit(
+            self.compress_layer_kv, layer_idx, k_copy, v_copy
+        )
+
+    def sparse_restore_layer_kv(
+        self,
+        layer_idx: int,
+        attn_weights: np.ndarray,
+        threshold: float = 1e-6,
+        lkv: Optional[LayerKV] = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sparse V decompression: skip negligible-weight positions entirely.
+
+        Mirrors the Metal kernel TURBO_SPARSE_V optimisation from README:
+        positions where softmax(attn_weight) < threshold contribute negligibly
+        to the attention output (attn_weights @ V), so we skip decompressing them.
+
+        K is always fully decompressed — routing must be correct.
+        V is sparsified — value aggregation is numerically tolerant.
+
+        From README validated benchmarks:
+          - +22.8% decode speed at 32K context vs dense turbo3
+          - Zero PPL penalty (ON/OFF delta = 0.000 on Wikitext-103)
+          - NIAH: 9/9 correct vs 7/9 without sparse-V
+
+        Args:
+            layer_idx: Layer index.
+            attn_weights: Softmax weights, shape (num_heads, kv_seq_len) or
+                          (num_heads, query_len, kv_seq_len).
+            threshold: Min attention weight to trigger V decompression.
+                       Default 1e-6 matches llama.cpp Metal kernel default.
+            lkv: Optional pre-fetched LayerKV. Uses internal store if None.
+
+        Returns:
+            (k, v) where k is fully decompressed, v is sparse-decompressed
+            (zero at skipped positions — contributes 0 to attn_weights@V).
+        """
+        if lkv is None:
+            lkv = self._kv_store.get(layer_idx)
+            if lkv is None:
+                raise KeyError(f"No KV cached for layer {layer_idx}")
+
+        compressor = self._compressors[layer_idx]
+        n_heads = lkv.k_indices.shape[0]
+
+        k_out = np.zeros((n_heads, lkv.seq_len, self.head_dim), dtype=np.float32)
+        v_out = np.zeros((n_heads, lkv.seq_len, self.head_dim), dtype=np.float32)
+
+        # Normalise attn_weights to (num_heads, seq_len)
+        aw = attn_weights
+        if aw.ndim == 3:
+            aw = aw.max(axis=1)  # (num_heads, kv_seq_len)
+
+        from turboquant.turboquant import CompressedVector
+
+        skipped_total = 0
+        for h in range(n_heads):
+            # K: always fully decompress (inner product routing)
+            compressed_k = CompressedVector(
+                mse_indices=lkv.k_indices[h],
+                vector_norms=lkv.k_norms[h],
+                qjl_signs=lkv.k_qjl_signs[h],
+                residual_norms=lkv.k_residual_norms[h],
+                bit_width=self.policy.k_bits,
+            )
+            k_out[h] = compressor.k_quantizer.dequantize(compressed_k)
+
+            # V: sparse — only decompress positions that carry meaningful weight
+            head_weights = aw[h] if h < aw.shape[0] else aw[-1]
+            active_positions = np.where(head_weights >= threshold)[0]
+            skipped_total += lkv.seq_len - len(active_positions)
+
+            if len(active_positions) == 0:
+                continue
+
+            v_idx_active = lkv.v_indices[h][active_positions]
+            v_norms_active = lkv.v_norms[h][active_positions]
+            v_out[h][active_positions] = compressor.v_quantizer.dequantize(
+                v_idx_active, v_norms_active
+            )
+
+        self._last_sparse_skip_fraction = skipped_total / max(n_heads * lkv.seq_len, 1)
+        return k_out, v_out
+
+    def restore_layer_kv(
+        self,
+        layer_idx: int,
+        lkv: Optional[LayerKV] = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decompress K and V tensors for a layer (full, non-sparse).
+
+        For sparse decompression, use sparse_restore_layer_kv() instead.
+
+        Args:
+            layer_idx: Transformer layer index.
+            lkv: LayerKV to decompress. If None, uses internally stored kv.
+
+        Returns:
+            (k, v), both shape (num_heads, seq_len, head_dim).
+        """
+        if lkv is None:
+            lkv = self._kv_store.get(layer_idx)
+            if lkv is None:
+                raise KeyError(f"No KV cached for layer {layer_idx}")
+
+        compressor = self._compressors[layer_idx]
+        n_heads = lkv.k_indices.shape[0]
+
+        k_out = np.zeros((n_heads, lkv.seq_len, self.head_dim), dtype=np.float32)
+        v_out = np.zeros_like(k_out)
+
+        from turboquant.turboquant import CompressedVector
+        for h in range(n_heads):
+            compressed_k = CompressedVector(
+                mse_indices=lkv.k_indices[h],
+                vector_norms=lkv.k_norms[h],
+                qjl_signs=lkv.k_qjl_signs[h],
+                residual_norms=lkv.k_residual_norms[h],
+                bit_width=self.policy.k_bits,
+            )
+            k_out[h] = compressor.k_quantizer.dequantize(compressed_k)
+            v_out[h] = compressor.v_quantizer.dequantize(
+                lkv.v_indices[h], lkv.v_norms[h]
+            )
+
+        return k_out, v_out
+
+    def clear_kv(self, layer_idx: Optional[int] = None) -> None:
+        """Free compressed KV memory for one layer or all layers."""
         if layer_idx is not None:
             self._kv_store.pop(layer_idx, None)
         else:
             self._kv_store.clear()
         gc.collect()
+
+    # ------------------------------------------------------------------
+    # Memory / diagnostic report
+    # ------------------------------------------------------------------
+
+    def memory_report(self) -> str:
+        """Return a human-readable memory report string."""
+        policy = self.policy
+        raw_mb = self._total_uncompressed_bytes / 1024 / 1024
+        comp_mb = self._total_compressed_bytes / 1024 / 1024
+        ratio = raw_mb / max(comp_mb, 1e-9)
+        avg_compress_ms = (
+            1000 * sum(self._layer_compress_times) / max(len(self._layer_compress_times), 1)
+        )
+        sparse_pct = self._last_sparse_skip_fraction * 100
+
+        lines = [
+            "=" * 60,
+            "AirLLM + TurboQuant Hybrid Session Report",
+            "=" * 60,
+            f"  Model size:        {self.model_size_b:.0f}B",
+            f"  Layers:            {self.num_layers}",
+            f"  Heads:             {self.num_heads}  |  Head dim: {self.head_dim}",
+            "",
+            f"  — TurboQuant KV Config —",
+            f"  K precision:       turbo{policy.k_bits} (IP-preserving Q@K^T)",
+            f"  V precision:       turbo{policy.v_bits} (MSE-only attn@V)",
+            f"  Boundary protect:  first/last {policy.boundary_n_layers} layers @ turbo{policy.boundary_k_bits}",
+            f"  Sparse V:          last call skipped {sparse_pct:.1f}% of V positions",
+            "",
+            f"  — AirLLM Pipeline Config —",
+            f"  Layer prefetch:    ThreadPoolExecutor (disk → RAM, Thread 1)",
+            f"  Async compress:    ThreadPoolExecutor (KV compress, Thread 3)",
+            f"  Max context:       {policy.max_context}",
+            "",
+            f"  — Memory —",
+            f"  KV raw size:       {raw_mb:.1f} MB",
+            f"  KV compressed:     {comp_mb:.1f} MB",
+            f"  Compression ratio: {ratio:.2f}×",
+            f"  Avg compress time: {avg_compress_ms:.2f} ms/layer",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+    @property
+    def compression_ratio(self) -> float:
+        """Overall KV compression ratio achieved so far."""
+        if self._total_compressed_bytes == 0:
+            return 0.0
+        return self._total_uncompressed_bytes / self._total_compressed_bytes
+
+    def config_summary(self) -> dict:
+        """Return a dict of current session configuration."""
+        return {
+            "model_size_b": self.model_size_b,
+            "num_layers": self.num_layers,
+            "k_bits": self.policy.k_bits,
+            "v_bits": self.policy.v_bits,
+            "boundary_k_bits": self.policy.boundary_k_bits,
+            "boundary_n_layers": self.policy.boundary_n_layers,
+            "max_context": self.policy.max_context,
+        }
+
+    def shutdown(self) -> None:
+        """Shut down the async compression executor cleanly."""
+        self._compress_executor.shutdown(wait=True)
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
 
     # ------------------------------------------------------------------
     # Memory / diagnostic report

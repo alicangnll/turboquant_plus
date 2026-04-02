@@ -79,45 +79,191 @@ esac
 
 echo ">>> $MODEL_NAME model selected, preparing..."
 
-if [ ! -f "$MODEL_FILE" ]; then
+# Check both possible model locations (legacy location and current)
+MODEL_BASENAME=$(basename "$MODEL_FILE")
+if [ -f "llama-cpp-turboquant/models/$MODEL_BASENAME" ]; then
+    MODEL_FILE="llama-cpp-turboquant/models/$MODEL_BASENAME"
+    echo ">>> Model found (existing): $MODEL_FILE"
+elif [ ! -f "$MODEL_FILE" ]; then
     echo ">>> Downloading model... ($MODEL_FILE)"
+    mkdir -p models
     curl -L -o "$MODEL_FILE" "$MODEL_URL"
 else
     echo ">>> Model is already downloaded: $MODEL_FILE"
 fi
 
+
 # Part 4: Running the Model with TurboQuant Settings
 echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
 
 if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
-    echo ">>> 500B+ Class Model Detected: Activating EXTREME memory savings and NVMe swap optimizations..."
-    # -b 128: Low batch to prevent memory spikes on swap
-    # turbo2: 6.4x extreme compression to squeeze cache into remaining unified memory
-    EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8 --no-mmap"
-    CACHE_TYPE="turbo2"
-    echo "    Extra parameters (NVMe Swap Safe, Low Memory Footprint): $EXTRA_ARGS with $CACHE_TYPE"
+    echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
+    # -b 128: Low batch prevents spikes. No --no-mmap means macOS uses NVMe swap for weights.
+    EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8"
+    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_V="turbo2"
+    echo "    Extra parameters (NVMe-based Virtual Memory): $EXTRA_ARGS with turbo4+2"
 elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
-    echo ">>> 100B Class Model Detected: Activating maximum performance and stability settings for Apple Silicon M Series..."
-    EXTRA_ARGS="-c 1024 -b 2048 -ub 512 -t 12 --no-mmap"
-    CACHE_TYPE="turbo4"
-    echo "    Extra parameters (Wired-memory freeze prevention, Wide Batch): $EXTRA_ARGS"
+    echo ">>> 100B Class Model Detected: Activating maximum stability settings..."
+    EXTRA_ARGS="-c 1024 -b 2048 -ub 512 -t 12"
+    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_V="turbo4"
+    echo "    Extra parameters (MMAP-backed weights): $EXTRA_ARGS"
+elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
+    echo ">>> 32B Class Model Detected: Applying Balanced-Hybrid profile..."
+    # Hybrid Cache: turbo4 for K (attention routing), turbo2 for V (value) = Max RAM save + Quality
+    EXTRA_ARGS="-c 1024 -b 512 -ub 256"
+    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_V="turbo2"
+    echo "    Extra parameters (Hybrid KV: turbo4 K / turbo2 V): $EXTRA_ARGS"
 else
-    EXTRA_ARGS="-c 4096"
-    CACHE_TYPE="turbo4"
+    EXTRA_ARGS="-c 2048"
+    CACHE_TYPE_K="turbo4"
+    CACHE_TYPE_V="turbo4"
 fi
 
+# ---------------------------------------------------------------------------
+# Auto-detect safe GPU layer count (NGL) to prevent Metal OOM
+#
+# Strategy (3-component budget model):
+#   metal_budget = recommendedMaxWorkingSetSize from Metal driver
+#   kv_budget    = estimated KV cache size (turbo4 compressed, current ctx)
+#   graph_budget = ~1500 MB for ggml graph buffers, activation mem, overhead
+#   weight_budget = metal_budget - kv_budget - graph_budget
+#   safe_ngl = floor(weight_budget * 0.95 / bytes_per_layer)
+#
+# Using system_profiler first (exact driver value), sysctl as fallback.
+# system_profiler SPHardwareDataType is faster than SPDisplaysDataType.
+# ---------------------------------------------------------------------------
+get_metal_budget_mb() {
+    local budget=0
+
+    # Primary: parse ioreg for IOAccelerator recommendedMaxWorkingSetSize
+    # This is the exact same value llama.cpp reads internally.
+    if command -v ioreg &>/dev/null; then
+        budget=$(ioreg -r -d 1 -c AGXAccelerator 2>/dev/null \
+            | grep -i 'recommendedMaxWorkingSetSize' \
+            | awk '{gsub(/[^0-9]/,"",$NF); print $NF+0}' \
+            | head -1)
+        # Convert bytes → MB if needed (value > 1,000,000 means bytes)
+        if [ -n "$budget" ] && [ "$budget" -gt 1000000 ] 2>/dev/null; then
+            budget=$(( budget / 1024 / 1024 ))
+        fi
+    fi
+
+    # Fallback: 75% of physical RAM (conservative, matches M-series observed ratio)
+    if [ -z "$budget" ] || [ "$budget" -le 0 ] 2>/dev/null; then
+        local total_bytes
+        total_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        budget=$(( total_bytes / 1024 / 1024 * 75 / 100 ))
+    fi
+
+    echo "${budget:-16384}"  # hard fallback: 16 GB
+}
+
+estimate_kv_mb() {
+    # Estimate turbo4-compressed KV cache size in MB
+    # Formula: ctx * layers * heads * head_dim * 2bytes * 2(K+V) / turbo4_ratio / 1024^2
+    # turbo4 = 4.25 bits/value → ratio vs fp16 = 16/4.25 ≈ 3.76x
+    local ctx_len="$1"
+    local n_layers="$2"
+    local n_heads="$3"
+    local head_dim="$4"
+    local cache_type="$5"
+
+    local ratio=376  # turbo4: 3.76x (× 100 for integer math)
+    [ "$cache_type" = "turbo2" ] && ratio=640   # turbo2: 6.4x
+    [ "$cache_type" = "turbo3" ] && ratio=490   # turbo3: 4.9x
+    [ "$cache_type" = "q8_0" ]   && ratio=200   # q8_0: 2x
+
+    # raw = ctx * layers * heads * head_dim * 2 bytes * 2 (K+V) in MB
+    local raw_mb=$(( ctx_len * n_layers * n_heads * head_dim * 4 / 1024 / 1024 ))
+    local compressed_mb=$(( raw_mb * 100 / ratio ))
+    echo "$compressed_mb"
+}
+
+calculate_ngl() {
+    local model_file="$1"
+    local total_layers="$2"
+    local n_heads="$3"
+    local head_dim="$4"
+    local ctx_len="$5"
+    local cache_type="$6"
+
+    local metal_budget_mb
+    metal_budget_mb=$(get_metal_budget_mb)
+
+    local model_size_mb=0
+    if [ -f "$model_file" ]; then
+        model_size_mb=$(( $(stat -f%z "$model_file" 2>/dev/null || echo 0) / 1024 / 1024 ))
+    fi
+
+    if [ "$model_size_mb" -eq 0 ] || [ "$total_layers" -eq 0 ]; then
+        echo 99
+        return
+    fi
+
+    local bytes_per_layer_mb=$(( model_size_mb / total_layers ))
+
+    # Estimate KV cache size at given context
+    local kv_mb
+    kv_mb=$(estimate_kv_mb "$ctx_len" "$total_layers" "$n_heads" "$head_dim" "$cache_type")
+
+    # ggml compute graph + activation buffers + Metal overhead
+    # Increased to 2500MB as 32B models have larger intermediate activation tensors
+    local graph_overhead_mb=2500
+
+    # Weight budget = total budget − KV − graph overhead
+    local weight_budget_mb=$(( metal_budget_mb - kv_mb - graph_overhead_mb ))
+
+    [ "$weight_budget_mb" -le 0 ] && weight_budget_mb=$(( metal_budget_mb / 3 ))
+
+    # Use 55% of weight budget — leave 45% for OS and memory-mapped page cache
+    # This ensures zero stuttering and prevents OOM during prefill phase.
+    local available_mb=$(( weight_budget_mb * 55 / 100 ))
+
+    local safe_ngl=$(( available_mb / bytes_per_layer_mb ))
+
+    [ "$safe_ngl" -gt "$total_layers" ] && safe_ngl=$total_layers
+    [ "$safe_ngl" -lt 1 ] && safe_ngl=1
+
+    echo "$safe_ngl"
+}
+
+# Per-model architecture parameters (heads, head_dim, context already set in EXTRA_ARGS)
+# Parse context from EXTRA_ARGS for KV estimation
+CTX_LEN=$(echo "$EXTRA_ARGS" | grep -o '\-c [0-9]*' | awk '{print $2}')
+[ -z "$CTX_LEN" ] && CTX_LEN=2048
+
+case "$model_choice" in
+  1|"8B"|"8b")     NUM_LAYERS=32; N_HEADS=32; HEAD_DIM=128 ;;
+  2|"32B"|"32b")   NUM_LAYERS=64; N_HEADS=40; HEAD_DIM=128 ;;
+  3|"100B"|"100b") NUM_LAYERS=96; N_HEADS=128; HEAD_DIM=128 ;;
+  5|"500B"|"500b") NUM_LAYERS=126; N_HEADS=128; HEAD_DIM=128 ;;
+  *)               NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # 0.5B
+esac
+
+METAL_BUDGET=$(get_metal_budget_mb)
+KV_EST=$(estimate_kv_mb "$CTX_LEN" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CACHE_TYPE_K")
+NGL=$(calculate_ngl "$MODEL_FILE" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CTX_LEN" "$CACHE_TYPE_K")
+
+echo ">>> Memory budget breakdown:"
+echo "    Metal GPU budget:  ~${METAL_BUDGET} MB"
+echo "    KV cache (${CACHE_TYPE}, ctx=${CTX_LEN}): ~${KV_EST} MB"
+echo "    Safe GPU layers:   ${NGL}/${NUM_LAYERS}"
+
 # README recommends turbo4 to overcome M1/M2/M3 L2 Cache wall and accelerate dequantization
-# (For 500B models, turbo2 is dynamically mandated to avoid out-of-memory)
-echo "Used parameters: -ngl 99 $EXTRA_ARGS --cache-type-k $CACHE_TYPE --cache-type-v $CACHE_TYPE"
+# NGL auto-calculated: metal_budget - kv_cache - graph_overhead → prevents Metal OOM assert
+echo "Used parameters: -ngl ${NGL} $EXTRA_ARGS --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V"
 echo "-----------------------------------------------"
 
 env TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
   -m "$MODEL_FILE" \
-  -ngl 99 \
+  -ngl "$NGL" \
   $EXTRA_ARGS \
   -fa on \
-  --cache-type-k $CACHE_TYPE \
-  --cache-type-v $CACHE_TYPE \
+  --cache-type-k "$CACHE_TYPE_K" \
+  --cache-type-v "$CACHE_TYPE_V" \
   -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" \
   -n 300
 
