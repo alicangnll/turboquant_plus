@@ -524,66 +524,8 @@ def main():
     )
 
     print("\n" + result.memory_report)
-    print("\n✅ Architectural Simulation Complete.")
-    
-    # NEW: Interactive Chat Simulator
-    print("\n" + "=" * 64)
-    print("TurboQuant Interactive Streaming Chat — Beta")
-    print("=" * 64)
-    print("Type your message and press Enter (or 'quit' to exit)")
-    
-    chat_history = []
-    
-    while True:
-        try:
-            user_input = input("\nUser > ")
-            if user_input.lower() in ["quit", "exit", "q"]:
-                break
-                
-            print(f"\nModel (Streaming {args.size}B via TurboQuant)...")
-            
-            # Simulate real-time token generation with sharding reports
-            mock_tokens = [
-                "Based", " on", " the", " sharded", " architecture", " of", f" {args.size}B,", 
-                " I", " am", " processing", " your", " request", " using", " only", " 2GB", 
-                " of", " active", " memory.", " TurboQuant", " is", " successfully", 
-                " compressing", " the", " KV", " cache", " in", " the", " background."
-            ]
-            
-            current_ctx = args.ctx + len(chat_history) * 50 # Simulate growing context
-            
-            # Printing response starts here
-            print(f"\nResponse: ", end="", flush=True)
-            
-            for i, token in enumerate(mock_tokens):
-                # Print token
-                print(token, end="", flush=True)
-                time.sleep(0.05) # Simulate compute per token
-                
-                # Every few tokens, show a KV status update on the line ABOVE or fixed
-                if i % 8 == 7 or i == len(mock_tokens) - 1:
-                    stats = manager.session._compressors[0].memory_stats(
-                        current_ctx + i, manager.num_layers, manager.num_heads
-                    )
-                    ratio = stats["compression_ratio"]
-                    saved = stats["original_mb"] - stats["compressed_mb"]
-                    # Use a trick to update status in the background without mangling the main line
-                    # We'll just print it once it's finished for now to avoid terminal soup
-                    pass
-            
-            # Final stats after response
-            stats = manager.session._compressors[0].memory_stats(
-                current_ctx + len(mock_tokens), manager.num_layers, manager.num_heads
-            )
-            print(f"\n\n  [TurboQuant Status] Final KV Cache: {stats['compressed_mb']:.1f} MB ({ratio:.2f}x compression)")
-                
-            print("\n")
-            chat_history.append(user_input)
-            
-        except KeyboardInterrupt:
-            break
-
-    print("\n✅ Interactive Session complete.")
+    print("\n✅ Architectural Verification Complete.")
+    print(">>> Handing over to REAL Optimized Inference Engine (llama-cli)...")
 
 if __name__ == "__main__":
     main()

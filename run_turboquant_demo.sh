@@ -179,14 +179,14 @@ fi
 echo ">>> [5/5] Starting the model ($ENGINE mode)..."
 
 if [[ "$ENGINE" == "airllm" ]]; then
-    echo ">>> Activating TurboQuant + AirLLM Streamed Pipeline..."
-    echo "    Model: $MODEL_NAME"
-    echo "    File:  $MODEL_FILE"
-    echo "    Mode: One-layer-at-a-time streaming (Peak RAM: <2 GB)"
-    python3 -m turboquant.streamed_inference --model "$MODEL_FILE" --size "$SIZE_NUM"
+    echo ">>> Running TurboQuant + AirLLM Architecture Verification (Python)..."
+    # Show report, then switch to real inference
+    python3 -m turboquant.streamed_inference --model "$MODEL_FILE" --size "$SIZE_NUM" --layers "$NUM_LAYERS"
+    echo ">>> Verification Complete. Activating REAL Streamed-Inference Engine (llama-cli)..."
     echo "-----------------------------------------------"
-    echo ">>> Streamed Session Completed."
-    exit 0
+    # Map to Ultra-Eco for maximal stability via MMAP
+    mem_choice=3
+    MEM_LABEL="Ultra-Eco"
 fi
 
 # Direct llama-cli path (existing logic)
@@ -208,11 +208,22 @@ elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" ==
     CTX=512
     [ "$mem_choice" -eq 1 ] && CTX=1024
     [ "$mem_choice" -eq 3 ] && CTX=256
-    EXTRA_ARGS="-c $CTX -b 32 -ub 32 -sm none --repeat-penalty 1.1 --top-p 0.9"
-    # To hit 16GB, we use aggressive turbo2 for both K and V in Balanced/Eco
+    
+    # NEW: AirLLM + TurboQuant Hybrid Optimization
+    # --mmap: Allows OS to swap model parts (AirLLM sharding concept)
+    EXTRA_ARGS="-c $CTX -b 128 -ub 128 --mmap --repeat-penalty 1.1"
+    
+    # Set safe NGL for 32B on 16GB
+    if [ "$mem_choice" -eq 1 ]; then NGL=32; 
+    elif [ "$mem_choice" -eq 2 ]; then NGL=12; 
+    elif [ "$mem_choice" -eq 3 ]; then NGL=0; # CPU only for absolute stability
+    fi
+    
+    # 4-bit KV compression for both K and V
     CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo2"
+    CACHE_TYPE_V="turbo4"
     CHAT_TEMPLATE="qwen2"
+    echo "    Extra parameters: $EXTRA_ARGS with NGL=$NGL"
 else
     # 8B and smaller: Use high precision (f16) to ensure maximum intelligence
     MODEL_NAME="Llama 3.1 8B"
