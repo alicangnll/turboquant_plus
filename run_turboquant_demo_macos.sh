@@ -299,12 +299,19 @@ else
         CACHE_TYPE_K="turbo4"
         CACHE_TYPE_V="turbo4"
         CHAT_TEMPLATE=""
+    elif [[ "$model_choice" == "7" || "$model_choice" == "31B" || "$model_choice" == "31b" ]]; then
+        echo ">>> 31B Class Model Detected (OpenAI MoE): Maximum Performance Mode (FA enabled)..."
+        CTX=2048
+        EXTRA_ARGS="-c $CTX -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 -fa on"
+        CACHE_TYPE_K="turbo4"
+        CACHE_TYPE_V="turbo4"
+        CHAT_TEMPLATE=""
     else
         # 8B and smaller: Use q8_0 for high accuracy and reliable attention kernel compatibility
         CTX=4096
         EXTRA_ARGS="-c $CTX -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 --temp 0.1"
-        CACHE_TYPE_K="q8_0"
-        CACHE_TYPE_V="q8_0"
+        CACHE_TYPE_K="turbo4"
+        CACHE_TYPE_V="turbo4"
         CHAT_TEMPLATE=""  # Auto-detect to avoid PEG parser errors
         SKIP_SYSTEM_PROMPT=0
     fi
