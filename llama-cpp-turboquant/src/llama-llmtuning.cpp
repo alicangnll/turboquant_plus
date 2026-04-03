@@ -24,6 +24,14 @@ llama_layer_prefetcher::~llama_layer_prefetcher() {
 }
 
 void llama_layer_prefetcher::prefetch(int il) {
+    if (il < 0 || il >= (int)model.layers.size()) return;
+
+    // Skip prefetch if layer is already in GPU memory (Metal)
+    // Full GPU offload means we don't need CPU-based prefetching
+    if (model.dev_layer(il) && strcmp(ggml_backend_dev_name(model.dev_layer(il)), "CPU") != 0) {
+        return;
+    }
+
     std::unique_lock<std::mutex> lock(mtx);
     next_layer = il;
     cv.notify_one();
@@ -100,22 +108,39 @@ void llama_kv_compress_worker::wait(int il) {
     cv.wait(lock, [this, il] { return completed_layer == il || should_exit; });
 }
 
+void llama_kv_compress_worker::wait_all() {
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait(lock, [this] { return (jobs.empty() && !is_working) || should_exit; });
+}
+
 void llama_kv_compress_worker::worker_loop() {
     while (true) {
         job j;
         {
             std::unique_lock<std::mutex> lock(mtx);
+            is_working = false;
+            cv.notify_all();
             cv.wait(lock, [this] { return !jobs.empty() || should_exit; });
             if (should_exit) {
                 break;
             }
             j = jobs.front();
             jobs.pop();
+            is_working = true;
         }
 
         // Stage 3: TurboQuant CPU compression (async, Thread 3)
         // This is where we run the quantization logic from turbo-quant.c
         
+        // Skip if already quantized by backend (Metal handles TQ natively)
+        if (j.k->type == GGML_TYPE_TURBO2_0 || j.k->type == GGML_TYPE_TURBO3_0 || 
+            j.k->type == GGML_TYPE_TURBO4_0 || j.k->type == GGML_TYPE_Q8_0) {
+            std::unique_lock<std::mutex> lock(mtx);
+            completed_layer = j.il;
+            cv.notify_all();
+            continue;
+        }
+
         const int64_t ne0 = j.k->ne[0]; // head_dim
         const int64_t ne1 = j.k->ne[1]; // n_heads * n_seq
         
@@ -131,27 +156,20 @@ void llama_kv_compress_worker::worker_loop() {
         
         for (int64_t i = 0; i < ne1; ++i) {
             // 1. Dequantize K to float
-            ggml_get_type_traits(j.k->type)->to_float(
+            const auto * traits = ggml_get_type_traits(j.k->type);
+            if (!traits->to_float) continue;
+
+            traits->to_float(
                 (const char *)j.k->data + i * ggml_row_size(j.k->type, ne0),
                 tmp_k.data(),
                 ne0
             );
             
             // 2. Quantize K to TURBO2 (if that's our target)
-            // Note: Since we are doing this in-place or replacing the buffer, 
-            // we must be careful about memory layout. 
-            // The LLMTuning logic usually assumes a hybrid KV cache where the 
-            // "compressed" buffer is pre-allocated or we are overwriting a 
-            // higher-precision one.
-            
-            // For this implementation, we assume the tensor 'j.k' is the target 
-            // and its 'type' might be updated or it was already set to a 
-            // quantized type.
-            
             quantize_row_turbo2_0_ref(tmp_k.data(), (block_turbo2_0 *)((char *)j.k->data + i * ggml_row_size(GGML_TYPE_TURBO2_0, ne0)), ne0);
             
             // Repeat for V
-            ggml_get_type_traits(j.v->type)->to_float(
+            traits->to_float(
                 (const char *)j.v->data + i * ggml_row_size(j.v->type, ne0),
                 tmp_v.data(),
                 ne0
@@ -179,14 +197,15 @@ llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : c
 void llama_tuning_session::step(int il, struct ggml_tensor * k, struct ggml_tensor * v) const {
     // 1. Kick off prefetch for next layer N+1
     if (il + 1 < (int)ctx.get_model().layers.size()) {
-        prefetcher->prefetch(il + 1); // wait for it inside the next step
+        prefetcher->prefetch(il + 1);
     }
     
-    // 2. Main compute on GPU for layer N (called by main thread)
-    // ... main thread runs the graph ...
-
+    // 2. Main compute (Current Thread 2) for layer N is happening in Parallel
+    
     // 3. Compress KV for layer N (async, Thread 3)
-    compressor->compress_async(il, k, v);
+    if (compressor) {
+        compressor->compress_async(il, k, v);
+    }
 }
 
 void llama_tuning_session::shutdown() {

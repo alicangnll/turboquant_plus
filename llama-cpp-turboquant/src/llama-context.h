@@ -358,5 +358,13 @@ private:
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
 
+    struct layer_info {
+        int il;
+        ggml_tensor * k = nullptr;
+        ggml_tensor * v = nullptr;
+        ggml_tensor * last_tensor = nullptr;
+    };
+
+    mutable std::map<struct ggml_tensor *, int> layer_ends;
     std::unique_ptr<llama_tuning_session> tuning_session;
 };

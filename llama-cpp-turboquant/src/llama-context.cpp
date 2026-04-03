@@ -1212,7 +1212,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
         //const auto t_start_us = ggml_time_us();
-
+        layer_ends.clear();
         gf = model.build_graph(gparams);
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
@@ -2200,6 +2200,27 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
+    if (tuning_session) {
+        ggml_backend_sched_set_eval_callback(sched.get(), [](ggml_tensor * t, bool ask, void * user_data) -> bool {
+            llama_context * ctx = (llama_context *)user_data;
+            (void)t; (void)ask; (void)ctx;
+            
+            /*
+            // STUBBED FOR DIAGNOSTICS: Isolate performance bottleneck
+            if (!ask) {
+                // ...
+            }
+            */
+
+            if (ctx->cparams.cb_eval) {
+                return ctx->cparams.cb_eval(t, ask, ctx->cparams.cb_eval_user_data);
+            }
+            return true;
+        }, this);
+    } else {
+        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+    }
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
@@ -2211,11 +2232,18 @@ ggml_status llama_context::graph_compute(
 }
 
 llm_graph_cb llama_context::graph_get_cb() const {
-    return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) {
+    return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) mutable {
         if (il >= 0) {
             ggml_format_name(cur, "%s-%d", name, il);
         } else {
             ggml_set_name(cur, name);
+        }
+
+        if (tuning_session && il >= 0) {
+            // Candidate for last tensor of a layer
+            if (strcmp(name, "l_out") == 0 || strcmp(name, "ffn_out") == 0) {
+                layer_ends[cur] = il;
+            }
         }
 
         // norm may be automatically assigned to the backend of the previous layer, increasing data transfer between backends

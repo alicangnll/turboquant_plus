@@ -56,6 +56,9 @@ public:
     // Block until compression for layer `il` is complete.
     void wait(int il);
 
+    // Block until all pending compression jobs are finished.
+    void wait_all();
+
 private:
     const struct llama_context & ctx;
     std::thread worker;
@@ -69,6 +72,7 @@ private:
     };
     std::queue<job> jobs;
     int completed_layer = -1;
+    bool is_working = false;
     bool should_exit = false;
 
     void worker_loop();
@@ -92,6 +96,9 @@ struct llama_tuning_session {
     
     // Core pipeline step for layer N
     void step(int il, struct ggml_tensor * k, struct ggml_tensor * v) const;
+
+    // Block until all asynchronous stages are completed for the current batch.
+    void wait_all() const;
 
     void shutdown();
 };
