@@ -23,6 +23,7 @@ add_library(llama
             llama-kv-cache.cpp
             llama-kv-cache-iswa.cpp
             llama-llmtuning.cpp
+            llama-repack.cpp
             llama-memory.cpp
             llama-memory-hybrid.cpp
             llama-memory-hybrid-iswa.cpp

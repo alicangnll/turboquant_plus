@@ -139,6 +139,12 @@ extern "C" {
 
     GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cpu_reg(void);
 
+    // TQR (TurboQuant Repack) Hijacking API
+    GGML_BACKEND_API void ggml_cpu_repack_register_tqr(void * addr, size_t size);
+    GGML_BACKEND_API void ggml_cpu_repack_unregister_tqr(void);
+    GGML_BACKEND_API bool ggml_cpu_repack_is_hijacked(void);
+    GGML_BACKEND_API void * ggml_cpu_repack_get_tqr_addr(void);
+
     GGML_BACKEND_API void ggml_cpu_fp32_to_fp32(const float *,       float *, int64_t);
     GGML_BACKEND_API void ggml_cpu_fp32_to_i32 (const float *,     int32_t *, int64_t);
     GGML_BACKEND_API void ggml_cpu_fp32_to_fp16(const float *, ggml_fp16_t *, int64_t);

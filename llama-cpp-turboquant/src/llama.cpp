@@ -826,9 +826,27 @@ int64_t llama_time_us(void) {
     return ggml_time_us();
 }
 
+#include "llama-repack.h"
+#include "ggml-cpu.h"
+
 // Returns 0 on success, -1 on error, and -2 on cancellation via llama_progress_callback
 static int llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model & model, llama_model_params & params) {
+
+    // TQR Hijack: Early detection and registration
+    if (!fname.empty() && !params.vocab_only) {
+        std::string tqr_path = fname + ".tqr";
+        size_t tqr_size = 0;
+        void * tqr_addr = llama_mmap_file(tqr_path.c_str(), &tqr_size);
+        if (tqr_addr) {
+            LLAMA_LOG_INFO("%s: [TURBO] Found TQR file %s (size: %zu). Enabling Zero-Allocation Hijacking.\n", 
+                           __func__, tqr_path.c_str(), tqr_size);
+            ggml_cpu_repack_register_tqr(tqr_addr, tqr_size);
+            model.tqr_addr = tqr_addr;
+            model.tqr_size = tqr_size;
+        }
+    }
+
     // loading time will be recalculated after the first eval, so
     // we take page faults deferred by mmap() into consideration
     model.t_load_us = 0;

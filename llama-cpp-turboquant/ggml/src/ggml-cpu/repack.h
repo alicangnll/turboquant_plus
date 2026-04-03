@@ -10,6 +10,12 @@
 
 ggml_backend_buffer_type_t ggml_backend_cpu_repack_buffer_type(void);
 
+// TQR (TurboQuant Repack) Hijacking API
+void ggml_cpu_repack_register_tqr(void * addr, size_t size);
+void ggml_cpu_repack_unregister_tqr(void);
+bool ggml_cpu_repack_is_hijacked(void);
+void * ggml_cpu_repack_get_tqr_addr(void);
+
 template <int K> constexpr int QK_0() {
     if constexpr (K == 4) {
         return QK4_0;

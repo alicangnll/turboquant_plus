@@ -14,6 +14,9 @@
 // on the current layer.
 //
 
+// Helper to unload a specific memory region from physical RAM
+void llama_unload_address(void * addr, size_t size);
+
 class llama_layer_prefetcher {
 public:
     llama_layer_prefetcher(const struct llama_model & model);

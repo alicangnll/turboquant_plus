@@ -326,9 +326,17 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
     pimpl->has_tensor_overrides = params.tensor_buft_overrides && params.tensor_buft_overrides[0].pattern;
 }
 
+#include <sys/mman.h>
+#include "ggml-cpu.h"
+
 llama_model::~llama_model() {
     for (auto * lora : loras) {
         delete lora;
+    }
+
+    if (tqr_addr) {
+        munmap(tqr_addr, tqr_size);
+        ggml_cpu_repack_unregister_tqr();
     }
 }
 

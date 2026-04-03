@@ -49,7 +49,7 @@ if [ ! -d "build" ]; then
         -DGGML_METAL=ON \
         -DGGML_METAL_EMBED_LIBRARY=ON \
         -DCMAKE_BUILD_TYPE=Release \
-        -DGGML_CPU_REPACK=OFF \
+        -DGGML_CPU_REPACK=ON \
         -DGGML_OPENMP="${OMP_ENABLED:-OFF}" \
         -DOpenMP_C_FLAGS="${OMP_C_FLAGS:-}" \
         -DOpenMP_C_LIB_NAMES="omp" \

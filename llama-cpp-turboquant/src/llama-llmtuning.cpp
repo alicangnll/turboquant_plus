@@ -1,4 +1,5 @@
 #include "llama-llmtuning.h"
+#include "llama-repack.h"
 #include "llama-context.h"
 #include "llama-model.h"
 #include "llama-kv-cache.h"
@@ -24,6 +25,21 @@ static void llama_unload_tensor(struct ggml_tensor * t) {
     length = (length + page_size - 1) & ~(page_size - 1);
 
     if (madvise(addr, length, MADV_DONTNEED) != 0) {
+        // Log error only in debug mode
+    }
+}
+
+void llama_unload_address(void * addr, size_t size) {
+    if (!addr || size == 0) return;
+
+    const size_t page_size = sysconf(_SC_PAGESIZE);
+    
+    // Align to page boundaries for madvise
+    void * aligned_addr = (void *)((uintptr_t)addr & ~(page_size - 1));
+    size_t length = size + ((uintptr_t)addr & (page_size - 1));
+    length = (length + page_size - 1) & ~(page_size - 1);
+
+    if (madvise(aligned_addr, length, MADV_DONTNEED) != 0) {
         // Log error only in debug mode
     }
 }
@@ -214,6 +230,28 @@ void llama_kv_compress_worker::worker_loop() {
 llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : ctx(ctx) {
     prefetcher = std::make_unique<llama_layer_prefetcher>(ctx.get_model());
     compressor = std::make_unique<llama_kv_compress_worker>(ctx);
+
+    // TQR (TurboQuant Repack) Hijacking Status check
+    char model_desc[256];
+    llama_model_desc(&ctx.get_model(), model_desc, sizeof(model_desc));
+
+    if (ggml_cpu_repack_is_hijacked()) {
+        LLAMA_LOG_INFO("%s: [TURBO] Zero-Allocation Hijacking active. Using pre-mapped weights from SSD.\n", __func__);
+    } else {
+        LLAMA_LOG_INFO("%s: Hijacking not active. Checking if we should cache current optimized weights...\n", __func__);
+        
+        // Sanitize model description for filename
+        std::string tqr_name = model_desc;
+        for (char & c : tqr_name) {
+            if (!isalnum(c)) c = '_';
+        }
+        std::string tqr_path = tqr_name + ".tqr";
+
+        // Try to save the current repack if it doesn't exist
+        if (llama_model_repack_save(const_cast<struct llama_model *>(&ctx.get_model()), tqr_path.c_str())) {
+             LLAMA_LOG_INFO("%s: [TURBO] Optimization cached to %s for future instant boots.\n", __func__, tqr_path.c_str());
+        }
+    }
 
     // Initial Footprint Minimization: Evacuate weights to SSD
     prefetcher->unload_all();

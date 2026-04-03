@@ -4723,6 +4723,27 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
     return nullptr;
 }
 
+static void * g_tqr_addr = nullptr;
+static size_t g_tqr_size = 0;
+
+void ggml_cpu_repack_register_tqr(void * addr, size_t size) {
+    g_tqr_addr = addr;
+    g_tqr_size = size;
+}
+
+void ggml_cpu_repack_unregister_tqr() {
+    g_tqr_addr = nullptr;
+    g_tqr_size = 0;
+}
+
+bool ggml_cpu_repack_is_hijacked() {
+    return g_tqr_addr != nullptr;
+}
+
+void * ggml_cpu_repack_get_tqr_addr() {
+    return g_tqr_addr;
+}
+
 static enum ggml_status ggml_backend_cpu_repack_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
     tensor->extra = (void *) const_cast<ggml::cpu::tensor_traits *>(ggml_repack_get_optimal_repack_type(tensor));
 
@@ -4732,6 +4753,12 @@ static enum ggml_status ggml_backend_cpu_repack_buffer_init_tensor(ggml_backend_
 
 static void ggml_backend_cpu_repack_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor,
                                                        const void * data, size_t offset, size_t size) {
+    // If this buffer is hijacked (pointing to TQR), we skip the repack as it's already done.
+    if (ggml_backend_buffer_get_base(buffer) == g_tqr_addr) {
+        // TQR Hijack: Data is already optimized.
+        return;
+    }
+
     GGML_ASSERT(offset == 0);
     GGML_ASSERT(size == ggml_nbytes(tensor));
 
@@ -4749,6 +4776,21 @@ static const char * ggml_backend_cpu_repack_buffer_type_get_name(ggml_backend_bu
 }
 
 static ggml_backend_buffer_t ggml_backend_cpu_repack_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    // TQR HIJACK: If a TQR address is registered, use it instead of allocating new RAM.
+    if (g_tqr_addr) {
+        ggml_backend_buffer_t buffer = ggml_backend_cpu_buffer_from_ptr(g_tqr_addr, size);
+        if (buffer) {
+            buffer->buft              = buft;
+            buffer->iface.init_tensor = ggml_backend_cpu_repack_buffer_init_tensor;
+            buffer->iface.set_tensor  = ggml_backend_cpu_repack_buffer_set_tensor;
+            buffer->iface.get_tensor  = nullptr;
+            buffer->iface.cpy_tensor  = nullptr;
+            GGML_LOG_DEBUG("%s: [TURBO] Hijacking CPU_REPACK allocation with TQR address %p (size: %zu)\n", 
+                           __func__, g_tqr_addr, size);
+            return buffer;
+        }
+    }
+
     ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
 
     if (buffer == nullptr) {
