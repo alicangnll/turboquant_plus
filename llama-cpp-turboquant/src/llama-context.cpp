@@ -2207,17 +2207,18 @@ ggml_status llama_context::graph_compute(
         // 1. Ensure previous KV compression is completely finished
         tuning_session->wait_all();
         
-        // 2. Start prefetching weights for T+1 (Asynchronous)
-        tuning_session->prefetch_all();
+        // 2. Set the evaluation callback to handle per-layer sharding/unloading
+        ggml_backend_sched_set_eval_callback(sched.get(), tuning_eval_callback, this);
         
-        // 3. Start GPU compute for current pass T (Asynchronous)
+        // 3. Start prefetching weights for ONLY physical Layer 0
+        if (!model.layers.empty()) {
+            tuning_session->prefetcher->prefetch(0);
+        }
+        
+        // 4. Start GPU compute for current pass T (Asynchronous)
         status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
         
-        // 4. Wait for GPU completion specifically for the KV cache region
-        ggml_backend_sched_synchronize(sched.get());
-        
-        // 5. Start KV compression for current pass T (Asynchronous, but serial with GPU)
-        tuning_session->compress_all(*memory);
+        // Note: No more compress_all here. It's now handled by tuning_eval_callback per layer.
     } else {
         status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     }
@@ -3710,4 +3711,24 @@ void llama_opt_epoch(
         idata_split,
         callback_train,
         callback_eval);
+}
+bool llama_context::tuning_eval_callback(struct ggml_tensor * t, bool ask, void * user_data) {
+    auto * ctx = (llama_context *) user_data;
+    if (ask) return true; // PRE-OP: Continue
+
+    // POST-OP: Layer finished?
+    if (ctx->tuning_session) {
+        auto it = ctx->layer_ends.find(t);
+        if (it != ctx->layer_ends.end()) {
+            int il = it->second;
+            
+            // Trigger 3-stage pipeline step for this layer
+            // il is current layer. step() will prefetch il+1 and unload il-1
+            struct ggml_tensor * k = ctx->memory ? ctx->memory->get_layer_k(il) : nullptr;
+            struct ggml_tensor * v = ctx->memory ? ctx->memory->get_layer_v(il) : nullptr;
+            
+            ctx->tuning_session->step(il, k, v);
+        }
+    }
+    return true;
 }

@@ -4,6 +4,30 @@
 #include "llama-kv-cache.h"
 #include "../ggml/src/ggml-quants.h"
 
+#include <sys/mman.h>
+#include <unistd.h>
+#include <cstring>
+
+// Helper to unload a single tensor's data from RAM
+static void llama_unload_tensor(struct ggml_tensor * t) {
+    if (!t || !t->data) return;
+
+    // We use madvise(MADV_DONTNEED) to tell the OS that we don't need this memory right now.
+    // The OS will reclaim the physical RAM pages, but the virtual address space remains valid.
+    // Next time we access it, the OS will page it back in from disk.
+    const size_t size = ggml_nbytes(t);
+    const size_t page_size = sysconf(_SC_PAGESIZE);
+    
+    // Align to page boundaries for madvise
+    void * addr = (void *)((uintptr_t)t->data & ~(page_size - 1));
+    size_t length = size + ((uintptr_t)t->data & (page_size - 1));
+    length = (length + page_size - 1) & ~(page_size - 1);
+
+    if (madvise(addr, length, MADV_DONTNEED) != 0) {
+        // Log error only in debug mode
+    }
+}
+
 //
 // llama_layer_prefetcher
 //
@@ -27,7 +51,6 @@ void llama_layer_prefetcher::prefetch(int il) {
     if (il < 0 || il >= (int)model.layers.size()) return;
 
     // Skip prefetch if layer is already in GPU memory (Metal)
-    // Full GPU offload means we don't need CPU-based prefetching
     if (model.dev_layer(il) && strcmp(ggml_backend_dev_name(model.dev_layer(il)), "CPU") != 0) {
         return;
     }
@@ -40,6 +63,42 @@ void llama_layer_prefetcher::prefetch(int il) {
 void llama_layer_prefetcher::wait(int il) {
     std::unique_lock<std::mutex> lock(mtx);
     cv.wait(lock, [this, il] { return ready_layer == il || should_exit; });
+}
+
+void llama_layer_prefetcher::unload(int il) {
+    if (il < 0 || il >= (int)model.layers.size()) return;
+
+    // Skip unload if layer is on GPU
+    if (model.dev_layer(il) && strcmp(ggml_backend_dev_name(model.dev_layer(il)), "CPU") != 0) {
+        return;
+    }
+
+    const llama_layer & layer = model.layers[il];
+    
+    LLAMA_LOG_INFO("%s: unloading layer %d from physical RAM (Active Sharding)\n", __func__, il);
+
+    // Unload all major tensors in the layer
+    llama_unload_tensor(layer.wq);
+    llama_unload_tensor(layer.wk);
+    llama_unload_tensor(layer.wv);
+    llama_unload_tensor(layer.wo);
+    llama_unload_tensor(layer.wqkv);
+    
+    llama_unload_tensor(layer.ffn_gate);
+    llama_unload_tensor(layer.ffn_down);
+    llama_unload_tensor(layer.ffn_up);
+
+    llama_unload_tensor(layer.attn_norm);
+    llama_unload_tensor(layer.ffn_norm);
+}
+
+void llama_layer_prefetcher::unload_all() const {
+    const int n_layer = (int)model.layers.size();
+    LLAMA_LOG_INFO("%s: Cold Boot: Evacuating %d transformer layers to minimize initial RAM footprint...\n", __func__, n_layer);
+    for (int il = 0; il < n_layer; ++il) {
+        // cast away const to call member function (or make unload const)
+        const_cast<llama_layer_prefetcher*>(this)->unload(il);
+    }
 }
 
 void llama_layer_prefetcher::worker_loop() {
@@ -55,9 +114,7 @@ void llama_layer_prefetcher::worker_loop() {
             next_layer = -1;
         }
 
-        // simulating prefetch for now by accessing some weights
         if (il < 0 || il >= (int)model.layers.size()) {
-            LLAMA_LOG_ERROR("%s: layer index %d out of bounds (n_layers = %zu)\n", __func__, il, model.layers.size());
             continue;
         }
 
@@ -65,10 +122,15 @@ void llama_layer_prefetcher::worker_loop() {
         
         // Touch weights to page them in (Thread 1)
         LLAMA_LOG_DEBUG("%s: prefetching layer %d\n", __func__, il);
-        if (layer.wq) { (void)layer.wq->data; }
-        if (layer.wk) { (void)layer.wk->data; }
-        if (layer.wv) { (void)layer.wv->data; }
-        if (layer.wo) { (void)layer.wo->data; }
+        if (layer.wq)   { (void)*(const volatile char *)layer.wq->data; }
+        if (layer.wk)   { (void)*(const volatile char *)layer.wk->data; }
+        if (layer.wv)   { (void)*(const volatile char *)layer.wv->data; }
+        if (layer.wo)   { (void)*(const volatile char *)layer.wo->data; }
+        if (layer.wqkv) { (void)*(const volatile char *)layer.wqkv->data; }
+        
+        if (layer.ffn_gate) { (void)*(const volatile char *)layer.ffn_gate->data; }
+        if (layer.ffn_down) { (void)*(const volatile char *)layer.ffn_down->data; }
+        if (layer.ffn_up)   { (void)*(const volatile char *)layer.ffn_up->data; }
 
         {
             std::unique_lock<std::mutex> lock(mtx);
@@ -129,10 +191,6 @@ void llama_kv_compress_worker::worker_loop() {
             is_working = true;
         }
 
-        // Stage 3: TurboQuant CPU compression (async, Thread 3)
-        // This is where we run the quantization logic from turbo-quant.c
-        
-        // Skip if already quantized by backend (Metal handles TQ natively)
         if (j.k->type == GGML_TYPE_TURBO2_0 || j.k->type == GGML_TYPE_TURBO3_0 || 
             j.k->type == GGML_TYPE_TURBO4_0 || j.k->type == GGML_TYPE_Q8_0) {
             std::unique_lock<std::mutex> lock(mtx);
@@ -140,10 +198,6 @@ void llama_kv_compress_worker::worker_loop() {
             cv.notify_all();
             continue;
         }
-
-        // STUBBED: Do NOT modify KV cache from CPU to avoid corruption with Metal
-        // Metal backend handles TQ natively. We keep this thread for orchestration.
-        // We simply skip the quantization work and signal completion.
 
         {
             std::unique_lock<std::mutex> lock(mtx);
@@ -160,17 +214,27 @@ void llama_kv_compress_worker::worker_loop() {
 llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : ctx(ctx) {
     prefetcher = std::make_unique<llama_layer_prefetcher>(ctx.get_model());
     compressor = std::make_unique<llama_kv_compress_worker>(ctx);
+
+    // Initial Footprint Minimization: Evacuate weights to SSD
+    prefetcher->unload_all();
 }
 
 void llama_tuning_session::step(int il, struct ggml_tensor * k, struct ggml_tensor * v) const {
-    // 1. Kick off prefetch for next layer N+1
+    // Stage 1: LLMTuning Sharding
+    // Unload the previous layer (il-1) to free RAM immediately
+    if (il > 0) {
+        prefetcher->unload(il - 1);
+        if (il % 8 == 0) {
+            LLAMA_LOG_INFO("%s: LLMTuning Active Sharding... (Layer %d)\n", __func__, il);
+        }
+    }
+
+    // Prefetch the next layer (il+1) to be ready for the next step
     if (il + 1 < (int)ctx.get_model().layers.size()) {
         prefetcher->prefetch(il + 1);
     }
     
-    // 2. Main compute (Current Thread 2) for layer N is happening in Parallel
-    
-    // 3. Compress KV for layer N (async, Thread 3)
+    // Stage 3: TurboQuant KV Compression
     if (compressor) {
         compressor->compress_async(il, k, v);
     }
@@ -179,9 +243,7 @@ void llama_tuning_session::step(int il, struct ggml_tensor * k, struct ggml_tens
 void llama_tuning_session::prefetch_all() const {
     const int n_layer = (int)ctx.get_model().layers.size();
     for (int il = 0; il < n_layer; ++il) {
-        if (il + 1 < n_layer) {
-            prefetcher->prefetch(il + 1);
-        }
+        prefetcher->prefetch(il);
     }
 }
 

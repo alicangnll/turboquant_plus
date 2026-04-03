@@ -235,6 +235,8 @@ public:
 
     bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
 
+    static bool tuning_eval_callback(struct ggml_tensor * t, bool ask, void * user_data);
+
 private:
     llm_graph_params graph_params(
                         llm_graph_result * res,

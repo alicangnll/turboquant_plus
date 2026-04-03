@@ -25,6 +25,12 @@ public:
     // Block until layer `il` weights are fully loaded into RAM.
     void wait(int il);
 
+    // Release RAM for layer `il` (using madvise MADV_DONTNEED).
+    void unload(int il);
+
+    // Global footprint minimization: evacuate all layers from physical RAM.
+    void unload_all() const;
+
 private:
     const struct llama_model & model;
     std::thread worker;
