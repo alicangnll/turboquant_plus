@@ -11,89 +11,107 @@ from typing import Dict, Tuple
 
 import numpy as np
 
+QK_K = 256
+
+
+def _get_scale_min_k4(j: int, q: np.ndarray) -> tuple[float, float]:
+    """Match ggml get_scale_min_k4(j, scales, &sc, &m); q is 12-byte scales row."""
+    if j < 4:
+        return float(q[j] & 63), float(q[j + 4] & 63)
+    return (
+        float((q[j + 4] & 0x0F) | ((q[j - 4] >> 6) << 4)),
+        float((q[j + 4] >> 4) | ((q[j] >> 6) << 4)),
+    )
+
 
 def dequantize_q4_k(data: np.ndarray, shape: tuple) -> np.ndarray:
-    """Dequantize GGML Q4_K blocks (144 bytes per 256 weights)."""
-    n_elements = np.prod(shape)
-    n_blocks = n_elements // 256
-    if n_blocks == 0: return np.zeros(shape, dtype=np.float16)
+    """Dequantize GGML Q4_K blocks (144 bytes per 256 weights).
 
-    # Reshape into blocks
+    Must match ggml ``dequantize_row_q4_K`` / ``get_scale_min_k4`` (not legacy layouts).
+    """
+    n_elements = int(np.prod(shape))
+    n_blocks = n_elements // QK_K
+    if n_blocks == 0:
+        return np.zeros(shape, dtype=np.float16)
+
     blocks = data.reshape(n_blocks, 144)
-    
-    # Super-block scale and min (fp16)
-    d = blocks[:, 0:2].view(np.float16).astype(np.float32)
-    dmin = blocks[:, 2:4].view(np.float16).astype(np.float32)
-    
-    # Scales (12 bytes for 8 groups)
-    sc = blocks[:, 4:16]
-    # Unpack 6-bit scales and mins
-    scales = np.zeros((n_blocks, 8), dtype=np.float32)
-    mins = np.zeros((n_blocks, 8), dtype=np.float32)
-    
-    # Bytes 0-3: low 4 bits of scales 0-3 and mins 0-3
-    scales[:, 0] = (sc[:, 0] & 0x0F) | ((sc[:, 4] & 0x03) << 4)
-    scales[:, 1] = (sc[:, 1] & 0x0F) | ((sc[:, 4] & 0x0C) << 2)
-    scales[:, 2] = (sc[:, 2] & 0x0F) | ((sc[:, 4] & 0x30))
-    scales[:, 3] = (sc[:, 3] & 0x0F) | ((sc[:, 4] & 0xC0) >> 2)
-    
-    mins[:, 0] = (sc[:, 0] >> 4) | ((sc[:, 5] & 0x03) << 4)
-    mins[:, 1] = (sc[:, 1] >> 4) | ((sc[:, 5] & 0x0C) << 2)
-    mins[:, 2] = (sc[:, 2] >> 4) | ((sc[:, 5] & 0x30))
-    mins[:, 3] = (sc[:, 3] >> 4) | ((sc[:, 5] & 0xC0) >> 2)
-    
-    # Bytes 6-11: low 4 bits of scales 4-7 and mins 4-7
-    scales[:, 4] = (sc[:, 6] & 0x0F) | ((sc[:, 10] & 0x03) << 4)
-    scales[:, 5] = (sc[:, 7] & 0x0F) | ((sc[:, 10] & 0x0C) << 2)
-    scales[:, 6] = (sc[:, 8] & 0x0F) | ((sc[:, 10] & 0x30))
-    scales[:, 7] = (sc[:, 9] & 0x0F) | ((sc[:, 10] & 0xC0) >> 2)
-    
-    mins[:, 4] = (sc[:, 6] >> 4) | ((sc[:, 11] & 0x03) << 4)
-    mins[:, 5] = (sc[:, 7] >> 4) | ((sc[:, 11] & 0x0C) << 2)
-    mins[:, 6] = (sc[:, 8] >> 4) | ((sc[:, 11] & 0x30))
-    mins[:, 7] = (sc[:, 9] >> 4) | ((sc[:, 11] & 0xC0) >> 2)
+    d_all = blocks[:, 0:2].view(np.float16).astype(np.float32).reshape(-1)
+    min_all = blocks[:, 2:4].view(np.float16).astype(np.float32).reshape(-1)
+    scales12 = blocks[:, 4:16]
+    qs_all = blocks[:, 16:144]
 
-    # 4-bit quants (128 bytes)
-    # Dequantize
-    out = np.zeros((n_blocks, 256), dtype=np.float16)
-    for i in range(8): # 8 groups of 32
-        group_scales = d * scales[:, i:i+1]
-        group_mins = dmin * mins[:, i:i+1]
-        
-        off = i * 16
-        group_data = blocks[:, 16+off : 16+off+16]
-        v1 = group_data & 0xF
-        v2 = group_data >> 4
-        
-        out[:, i*32 : i*32+16] = (v1 * group_scales - group_mins).astype(np.float16)
-        out[:, i*32+16 : i*32+32] = (v2 * group_scales - group_mins).astype(np.float16)
-        
-    return out.reshape(shape)
+    out = np.zeros((n_blocks, QK_K), dtype=np.float32)
+    for bi in range(n_blocks):
+        d = float(d_all[bi])
+        min_v = float(min_all[bi])
+        sc = scales12[bi]
+        qbuf = qs_all[bi]
+        y = out[bi]
+        yo = 0
+        is_ = 0
+        q = qbuf
+        for _ in range(0, QK_K, 64):
+            s0, m0 = _get_scale_min_k4(is_ + 0, sc)
+            s1, m1 = _get_scale_min_k4(is_ + 1, sc)
+            d1 = d * s0
+            m1f = min_v * m0
+            d2 = d * s1
+            m2f = min_v * m1
+            for l in range(32):
+                y[yo + l] = d1 * (int(q[l]) & 0xF) - m1f
+            for l in range(32):
+                y[yo + 32 + l] = d2 * (int(q[l]) >> 4) - m2f
+            yo += 64
+            q = q[32:]
+            is_ += 2
+
+    return out.reshape(shape).astype(np.float16)
 
 
 def dequantize_q6_k(data: np.ndarray, shape: tuple) -> np.ndarray:
-    """Dequantize GGML Q6_K blocks (210 bytes per 256 weights)."""
-    n_elements = np.prod(shape)
-    n_blocks = n_elements // 256
-    if n_blocks == 0: return np.zeros(shape, dtype=np.float16)
+    """Dequantize GGML Q6_K blocks (210 bytes per 256 weights).
+
+    Layout: ql[128], qh[64], scales[16], d (fp16). Matches ``dequantize_row_q6_K``.
+    """
+    n_elements = int(np.prod(shape))
+    n_blocks = n_elements // QK_K
+    if n_blocks == 0:
+        return np.zeros(shape, dtype=np.float16)
 
     blocks = data.reshape(n_blocks, 210)
-    
-    ql = blocks[:, 0:128]      # 128 bytes
-    sc = blocks[:, 192:208].astype(np.int8)  # 16 bytes
-    d  = blocks[:, 208:210].view(np.float16).astype(np.float32)
-    
-    out = np.zeros((n_blocks, 256), dtype=np.float16)
-    for i in range(16): # 16 scales for 16 blocks of 16
-        scale = d * sc[:, i:i+1]
-        off = i * 8
-        group = ql[:, off : off+8]
-        v1 = group & 0xF
-        v2 = group >> 4
-        out[:, i*16 : i*16+8] = ((v1.astype(np.float32) - 32) * scale).astype(np.float16)
-        out[:, i*16+8 : i*16+16] = ((v2.astype(np.float32) - 32) * scale).astype(np.float16)
-        
-    return out.reshape(shape)
+    ql_all = blocks[:, 0:128].astype(np.uint8)
+    qh_all = blocks[:, 128:192].astype(np.uint8)
+    sc_all = blocks[:, 192:208].astype(np.int8)
+    d_all = blocks[:, 208:210].view(np.float16).astype(np.float32).reshape(-1)
+
+    out = np.zeros((n_blocks, QK_K), dtype=np.float32)
+    for bi in range(n_blocks):
+        d = float(d_all[bi])
+        ql = ql_all[bi]
+        qh = qh_all[bi]
+        sc = sc_all[bi]
+        y = out[bi]
+        y_off = 0
+        ql_off = 0
+        qh_off = 0
+        sc_off = 0
+        for _ in range(0, QK_K, 128):
+            for l in range(32):
+                is_l = l // 16
+                q1 = int((ql[ql_off + l] & 0xF) | (((qh[qh_off + l] >> 0) & 3) << 4)) - 32
+                q2 = int((ql[ql_off + l + 32] & 0xF) | (((qh[qh_off + l] >> 2) & 3) << 4)) - 32
+                q3 = int((ql[ql_off + l] >> 4) | (((qh[qh_off + l] >> 4) & 3) << 4)) - 32
+                q4 = int((ql[ql_off + l + 32] >> 4) | (((qh[qh_off + l] >> 6) & 3) << 4)) - 32
+                y[y_off + l + 0] = d * int(sc[sc_off + is_l + 0]) * q1
+                y[y_off + l + 32] = d * int(sc[sc_off + is_l + 2]) * q2
+                y[y_off + l + 64] = d * int(sc[sc_off + is_l + 4]) * q3
+                y[y_off + l + 96] = d * int(sc[sc_off + is_l + 6]) * q4
+            y_off += 128
+            ql_off += 64
+            qh_off += 32
+            sc_off += 8
+
+    return out.reshape(shape).astype(np.float16)
 
 
 class GGUFMap:
@@ -191,6 +209,9 @@ class GGUFMap:
                  elif "attn_k" in name: short_name = "k_weight"
                  elif "attn_v" in name: short_name = "v_weight"
                  elif "attn_output" in name: short_name = "o_weight"
+                 elif "ffn_gate" in name: short_name = "gate_weight"
+                 elif "ffn_up" in name: short_name = "up_weight"
+                 elif "ffn_down" in name: short_name = "down_weight"
 
                  start = self.data_start + info["offset"]
                  
