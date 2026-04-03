@@ -211,5 +211,29 @@ class GGUFMap:
                       weights[short_name] = np.zeros(info["shape"], dtype=np.float16)
         return weights
 
+    def get_weight(self, name: str) -> np.ndarray:
+        """Fetch any named tensor from the GGUF and dequantize it to FP16."""
+        if name not in self.tensors:
+             return None
+        
+        info = self.tensors[name]
+        start = self.data_start + info["offset"]
+        
+        if info["type"] in (0, 1): # F32 or F16
+             dtype = np.float32 if info["type"] == 0 else np.float16
+             size = np.prod(info["shape"])
+             data = self.map[start : start + (size * np.dtype(dtype).itemsize)]
+             return np.frombuffer(data, dtype=dtype).reshape(info["shape"]).astype(np.float16)
+        elif info["type"] == 12: # Q4_K
+             size_bytes = (np.prod(info["shape"]) // 256) * 144
+             data = self.map[start : start + size_bytes]
+             return dequantize_q4_k(data, info["shape"])
+        elif info["type"] == 14: # Q6_K
+             size_bytes = (np.prod(info["shape"]) // 256) * 210
+             data = self.map[start : start + size_bytes]
+             return dequantize_q6_k(data, info["shape"])
+        
+        return np.zeros(info["shape"], dtype=np.float16)
+
     def close(self):
         self.fd.close()
