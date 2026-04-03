@@ -14,6 +14,9 @@
 
 #include "ggml-cpp.h"
 
+#include <unistd.h>
+#include <sys/mman.h>
+#include "ggml-cpu.h"
 #include "models/models.h"
 
 #include <algorithm>
@@ -326,9 +329,6 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
     pimpl->has_tensor_overrides = params.tensor_buft_overrides && params.tensor_buft_overrides[0].pattern;
 }
 
-#include <sys/mman.h>
-#include "ggml-cpu.h"
-
 llama_model::~llama_model() {
     for (auto * lora : loras) {
         delete lora;
@@ -337,6 +337,15 @@ llama_model::~llama_model() {
     if (tqr_addr) {
         munmap(tqr_addr, tqr_size);
         ggml_cpu_repack_unregister_tqr();
+    }
+
+    if (tqr_dummy_ptr) {
+        // dummy check
+    }
+
+    if (!tqr_mapping_path.empty()) {
+        LLAMA_LOG_INFO("%s: [TURBO] Cleaning up TQR cache file: %s\n", __func__, tqr_mapping_path.c_str());
+        unlink(tqr_mapping_path.c_str());
     }
 }
 

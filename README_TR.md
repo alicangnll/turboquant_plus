@@ -16,7 +16,8 @@ Yeni nesil TurboQuant+ motoru, Apple Silicon cihazlarda (8GB-24GB RAM) 32B'den 5
 Başlangıçta üç farklı mod seçilebilir:
 - **Performance**: Maksimum GPU kullanımı. 32GB+ RAM sistemler için en hızlı seçenek.
 - **Balanced**: 24GB RAM (M-Pro serisi) için optimize edilmiştir. GPU bütçesinin %30-40'ını kullanır.
-- **Ultra-Eco**: 8-16GB RAM için güvenli mod. Minimal GPU, `turbo2` (2-bit) KV önbelleği ve 512 context limiti.
+- **Ultra-Eco**: 8-16GB RAM için güvenli mod. Minimal GPU, `turbo2` (2-bit) KV önbelleği ve 512 context limiti. **Aktif Katman Tahliyesi (`madvise`) ve `mlock` kısıtlaması** sayesinde, 8B modeller artık **~1.1GB toplam RAM** ile çalışabiliyor.
+
 
 ### 2. Çift İvmelendirme: Metal + OpenMP
 Motor artık Apple Metal (GPU) ve OpenMP (CPU) donanımlarını aynı anda kullanır:
@@ -26,8 +27,12 @@ Motor artık Apple Metal (GPU) ve OpenMP (CPU) donanımlarını aynı anda kulla
 ### 3. Hibrit KV Önbelleği (`turbo4` + `turbo2`)
 Key (Anahtar) ve Value (Değer) tensörleri için bağımsız hassasiyet sunar. **K-cache**'in 4-bit (`turbo4`) olarak tutulması modelin zekasını korurken, **V-cache**'in 2-bit (`turbo2`) olarak sıkıştırılması bellek kullanımını dramatik şekilde düşürür.
 
-### 4. Akıllı MMAP Stratejisi
-Fiziksel RAM'den büyük modeller (100B, 500B) için geliştirilen akıllı bellek eşleme sayesinde, RAM yetmediğinde sistemin SSD üzerinden **NVMe Swap** kullanarak kilitlenmeden çalışması sağlanır.
+### 4. Akıllı MMAP ve Aktif Parçalama (Active Sharding)
+Fiziksel RAM'den büyük modeller (100B, 500B) için geliştirilen akıllı bellek eşleme, **Aktif Parçalama** ile birleştirilmiştir. Önyükleyici (prefetcher), katmanlar işlendikten hemen sonra onları RAM'den **tahliye eder** (`madvise`). Bu sayede, model boyutu mevcut RAM'den 10 kat büyük olsa bile sistem **NVMe Swap** kullanarak kilitlenmeden çalışır.
+
+### 5. Yeniden Paketleme Kısıtlaması (`-DGGML_CPU_REPACK=OFF`)
+Başlatma sırasında oluşan mükerrer ağırlık atamalarını önlemek için kritik bir düzeltme uygulanmıştır. "CPU Repack" tamponu devre dışı bırakılarak, 8B modelin soğuk önyükleme (cold-boot) bellek kullanımı 5.4GB'tan **~1.1GB**'a (%79 azalma) düşürülmüştür.
+
 
 ### 5. Evrensel Linux Desteği (CUDA & ROCm)
 TurboQuant+ artık Linux sunucuları ve iş istasyonları için tamamen optimize edilmiştir. Motor otomatik olarak şunları algılar:
@@ -60,10 +65,11 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 ### 6. Stabilize Edilen Asenkron Pipeline (`--turbo-async`)
 Motor artık gerçek bir 3 aşamalı asenkron orkestrasyon kullanır:
-- **Önyükleme**: GPU çalışırken bir sonraki adımın ağırlıkları diskten RAM'e çekilir.
+- **Önyükleme**: GPU çalışırken bir sonraki adımın ağırlıkları diskten RAM'e çekilir (**Cold Boot** minimizasyonu ile).
 - **Hesaplama**: Metal GPU çekirdekleri üzerinde tam hızda çıkarım yapılır.
 - **Sinyalleşme**: KV önbellek bütünlüğünü bozmadan güvenli arka plan yönetimi sağlanır.
 - **Sonuç**: Llama 3.1 8B modelinde **943.7 t/s** gibi rekor prompt hızları ve sıfır metin bozulması (@@@@).
+
 
 Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
 

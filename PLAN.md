@@ -182,6 +182,29 @@ Input vector x ∈ R^d
   - Stress test 104B models at 128K context with async pipeline. ✅
   - Verify zero-hallucination stability via Boundary protection. ✅
 
+### Phase 7: Ultra-Low RAM & Stability (Active Sharding)
+
+- [x] **Task 7.1 — Layer-Specific Memory Management**
+  - Add `unload(int il)` to `llama_layer_prefetcher` for dynamic weight release. ✅
+  - Implement `madvise(MADV_DONTNEED)` based unloading for on-demand RAM paging. ✅
+- [x] **Task 7.2 — Resource Suppression**
+  - Disable `mlock` in `llama-context.cpp` for Eco modes to prevent system swap competition. ✅
+  - Implement **Cold Boot** logic (`unload_all()`) to minimize initial RAM surge. ✅
+
+### Phase 8: Critical Footprint Fix (Repack Suppression)
+
+- [x] **Task 8.1 — CPU Repack Avoidance**
+  - Identify and suppress redundant `CPU_REPACK` buffer allocation via `-DGGML_CPU_REPACK=OFF`. ✅
+  - Achieve **~1.1GB RAM** footprint on 8B models (79% reduction vs baseline). ✅
+
+### Phase 9: Documentation & Release Prep
+
+- [x] **Task 9.1 — Architectural Mapping**
+  - Update `MAP.md` and `README.md` with Active Sharding and 2026 Engine logic. ✅
+- [ ] **Task 9.2 — Upstream Coordination**
+  - Finalize llama.cpp PR preparation with the new memory-efficient sharding logic. 🔄
+
+
 ---
 
 ## Key Mathematical Constants

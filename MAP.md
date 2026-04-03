@@ -10,6 +10,7 @@ The power of TurboQuant+ comes from combining three distinct optimization layers
 graph TD
     subgraph "Stage 1: LLMTuning (Disk I/O) - ASYNC"
         A[Disk: Model Weights] -->|Async Prefetch| B(CPU RAM: Layer N+1)
+        B -->|Active Sharding| H[Auto-Unload Layer N-1]
     end
 
     subgraph "Stage 2: LLMa (GPU Compute) - MAIN"
@@ -24,6 +25,7 @@ graph TD
 
     B -.->|Overlap with Compute| C
     D -.->|Sync before Compression| F
+    H -.->|Free physical RAM| G
 ```
 
 ---
@@ -33,8 +35,9 @@ graph TD
 ### 1. LLMTuning (The Sharding Strategy)
 **Role:** Memory Virtualization & Layer Loading.
 - **Async Prefetching**: Loads the *next* layer from disk while the *current* layer is being computed on the GPU.
-- **Layer-Sharding**: Only keeps the active transformer layer in VRAM/RAM at any given time.
-- **Benefit**: Allows a 104B model to run on a device with only 48GB (or even 16GB) of RAM by treating the SSD as "Extended VRAM".
+- **Active Sharding**: Automatically **unloads** (`madvise`) previously used layers from physical RAM as the inference progresses.
+- **Benefit**: Allows a 104B model to run on a device with only 48GB (or even **16GB** in Ultra-Eco mode) of RAM by treating the SSD as "Extended VRAM".
+
 
 ### 2. TurboQuant (The Compression Engine)
 **Role:** KV Cache Optimization.

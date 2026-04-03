@@ -561,12 +561,13 @@ struct llama_model {
     // for keeping track of associated LoRA adapters
     std::unordered_set<llama_adapter_lora *> loras;
 
-    int64_t t_load_us  = 0;
-    int64_t t_start_us = 0;
-
     // TQR (TurboQuant Repack) Hijacking
     void * tqr_addr = nullptr;
     size_t tqr_size = 0;
+    std::string tqr_mapping_path;
+
+    int64_t t_load_us  = 0;
+    int64_t t_start_us = 0;
 
     explicit llama_model(const struct llama_model_params & params);
     ~llama_model();

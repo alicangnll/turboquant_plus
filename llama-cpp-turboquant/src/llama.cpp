@@ -844,6 +844,7 @@ static int llama_model_load(struct gguf_context * metadata, llama_model_set_tens
             ggml_cpu_repack_register_tqr(tqr_addr, tqr_size);
             model.tqr_addr = tqr_addr;
             model.tqr_size = tqr_size;
+            model.tqr_path = tqr_path;
         }
     }
 

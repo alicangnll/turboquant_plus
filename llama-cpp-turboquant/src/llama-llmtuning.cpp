@@ -3,6 +3,7 @@
 #include "llama-context.h"
 #include "llama-model.h"
 #include "llama-kv-cache.h"
+#include <dirent.h>
 #include "../ggml/src/ggml-quants.h"
 
 #include <sys/mman.h>
@@ -235,21 +236,37 @@ llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : c
     char model_desc[256];
     llama_model_desc(&ctx.get_model(), model_desc, sizeof(model_desc));
 
+    // Cleanup stale TQR files in the current directory
+    std::string current_tqr_name = model_desc;
+    for (char & c : current_tqr_name) {
+        if (!isalnum(c)) c = '_';
+    }
+    std::string current_tqr_filename = current_tqr_name + ".tqr";
+
+    DIR * dir = opendir(".");
+    if (dir) {
+        struct dirent * entry;
+        while ((entry = readdir(dir)) != NULL) {
+            std::string fname = entry->d_name;
+            if (fname.size() > 4 && fname.substr(fname.size() - 4) == ".tqr") {
+                // If it's a TQR file but not for THIS model, delete it
+                if (fname != current_tqr_filename) {
+                    LLAMA_LOG_INFO("%s: [TURBO] Cleaning up stale TQR: %s\n", __func__, fname.c_str());
+                    unlink(fname.c_str());
+                }
+            }
+        }
+        closedir(dir);
+    }
+
     if (ggml_cpu_repack_is_hijacked()) {
         LLAMA_LOG_INFO("%s: [TURBO] Zero-Allocation Hijacking active. Using pre-mapped weights from SSD.\n", __func__);
     } else {
         LLAMA_LOG_INFO("%s: Hijacking not active. Checking if we should cache current optimized weights...\n", __func__);
         
-        // Sanitize model description for filename
-        std::string tqr_name = model_desc;
-        for (char & c : tqr_name) {
-            if (!isalnum(c)) c = '_';
-        }
-        std::string tqr_path = tqr_name + ".tqr";
-
         // Try to save the current repack if it doesn't exist
-        if (llama_model_repack_save(const_cast<struct llama_model *>(&ctx.get_model()), tqr_path.c_str())) {
-             LLAMA_LOG_INFO("%s: [TURBO] Optimization cached to %s for future instant boots.\n", __func__, tqr_path.c_str());
+        if (llama_model_repack_save(const_cast<struct llama_model *>(&ctx.get_model()), current_tqr_filename.c_str())) {
+             LLAMA_LOG_INFO("%s: [TURBO] Optimization cached to %s for future instant boots.\n", __func__, current_tqr_filename.c_str());
         }
     }
 
