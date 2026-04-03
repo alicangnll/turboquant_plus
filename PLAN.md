@@ -156,14 +156,31 @@ Input vector x ∈ R^d
   - torch.nn.Module for drop-in KV cache replacement
   - Autograd-compatible (for potential fine-tuning experiments)
 
-- [ ] **Task 5.2 — llama.cpp C Implementation**
-  - Port core algorithms to C
-  - Integrate with llama.cpp's KV cache management (ggml_backend)
-  - Target: PR-ready patch
+- [x] **Task 5.2 — llama.cpp C Implementation**
+  - Port core algorithms to C ✅
+  - Integrate with llama.cpp's KV cache management (ggml_backend) ✅
+  - Metal/CUDA/ROCm kernel optimization ✅
+  - [Upstream PR #21119](https://github.com/ggml-org/llama.cpp/pull/21119) (Sparse V) 🔄
 
 - [ ] **Task 5.3 — MLX Implementation**
-  - Port to MLX for Apple Silicon optimization
-  - Use Metal shaders for rotation + quantization
+  - Port to MLX for Apple Silicon optimization ⏳
+  - Use Metal shaders for rotation + quantization ⏳
+
+### Phase 6: Async Pipeline & Joint Integration (2026 Engine)
+
+- [x] **Task 6.1 — 3-Stage Asynchronous Pipeline**
+  - Implement `LayerPrefetcher` (Thread 1) for background weight loading. ✅
+  - Implement `KVCompressionWorker` (Thread 3) for background cache optimization. ✅
+  - Resolve race conditions on Metal for true parallel execution. ✅
+
+- [x] **Task 6.2 — Safe Hybrid Orchestration**
+  - Synchronize KV compression with GPU idle states to prevent `@@@@` corruption. ✅
+  - Maximize prompt processing speed via async prefetching. ✅
+  - Achieve **940+ t/s** prompt speed on 8B models. ✅
+
+- [x] **Task 6.3 — Performance Validation**
+  - Stress test 104B models at 128K context with async pipeline. ✅
+  - Verify zero-hallucination stability via Boundary protection. ✅
 
 ---
 

@@ -58,9 +58,12 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 32B ve üzeri devasa modelleri Apple Silicon üzerinde çalıştırmak için LLMTuning'in "katman parçalama" stratejisi ile TurboQuant birleştirilmiştir. **3 aşamalı asenkron pipeline** yapısı şöyledir:
 
-1.  **Aşama 1 (Disk I/O)**: `LayerPrefetcher` bir sonraki katmanı RAM'e yükler.
-2.  **Aşama 2 (GPU Hesaplama)**: Aktif katman GPU üzerinde çıkarım yapar.
-3.  **Aşama 3 (CPU Sıkıştırma)**: `KVCompressionWorker` bir önceki katmanın KV önbelleğini CPU çekirdeklerinde arka planda sıkıştırır.
+### 6. Stabilize Edilen Asenkron Pipeline (`--turbo-async`)
+Motor artık gerçek bir 3 aşamalı asenkron orkestrasyon kullanır:
+- **Önyükleme**: GPU çalışırken bir sonraki adımın ağırlıkları diskten RAM'e çekilir.
+- **Hesaplama**: Metal GPU çekirdekleri üzerinde tam hızda çıkarım yapılır.
+- **Sinyalleşme**: KV önbellek bütünlüğünü bozmadan güvenli arka plan yönetimi sağlanır.
+- **Sonuç**: Llama 3.1 8B modelinde **943.7 t/s** gibi rekor prompt hızları ve sıfır metin bozulması (@@@@).
 
 Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
 

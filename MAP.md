@@ -8,22 +8,22 @@ The power of TurboQuant+ comes from combining three distinct optimization layers
 
 ```mermaid
 graph TD
-    subgraph "Stage 1: LLMTuning (Disk I/O)"
+    subgraph "Stage 1: LLMTuning (Disk I/O) - ASYNC"
         A[Disk: Model Weights] -->|Async Prefetch| B(CPU RAM: Layer N+1)
     end
 
-    subgraph "Stage 2: LLMa (GPU Compute)"
+    subgraph "Stage 2: LLMa (GPU Compute) - MAIN"
         C[GPU: Layer N Weights] -->|Matrix Mul| D{Token Generation}
-        E[KV Tensors] -->|Raw Data| D
+        E[KV Tensors] -->|Attention| D
     end
 
-    subgraph "Stage 3: TurboQuant (Compression)"
-        D -->|KV N-1| F(CPU: 2/3/4-bit Quantization)
-        F -->|Compressed Cache| G[Memory / SSD Swap]
+    subgraph "Stage 3: TurboQuant (Compression) - SYNC/SIGNAL"
+        D -->|GPU Done Signal| F(CPU: 2/3/4-bit Quantization)
+        F -->|Safe Compressed Cache| G[Memory / SSD Swap]
     end
 
-    B -.->|Overlap| C
-    D -.->|Overlap| F
+    B -.->|Overlap with Compute| C
+    D -.->|Sync before Compression| F
 ```
 
 ---
