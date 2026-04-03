@@ -124,25 +124,7 @@ calculate_ngl() {
 detect_backend
 install_linux_deps
 
-# Part 1: Python environment
-echo ">>> [1/4] Setting up Python environment..."
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e "."
-
-echo ">>> Starting theoretical compression demo via Python..."
-python3 benchmarks/demo.py
-echo "-----------------------------------------------"
-
-# Part 2: llama.cpp TurboQuant
-echo ">>> [2/4] Downloading and compiling llama.cpp TurboQuant ($BACKEND)..."
-if [ ! -d "llama-cpp-turboquant" ]; then
-    git clone https://github.com/TheTom/llama-cpp-turboquant.git
-fi
-
 cd llama-cpp-turboquant
-git checkout feature/turboquant-kv-cache
 
 echo ">>> Compiling with $BACKEND flags..."
 cmake -B build -DCMAKE_BUILD_TYPE=Release $CMAKE_FLAGS
@@ -228,9 +210,17 @@ NGL=$(calculate_ngl "$MODEL_FILE" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CTX" "$
 
 echo ">>> Calculated NGL: $NGL / $NUM_LAYERS"
 
-CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" -c \"$CTX\" $EXTRA_STABLE -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\" -sys \"$SYSTEM_PROMPT\""
+# KV cache types are only safe in turbo modes; when we fall back to q8_0 for GPT-OSS-20B,
+# we don't need to give explicit cache-type (llama.cpp uses defaults).
+if [[ "$CACHE_TYPE_K" != "q8_0" || "$CACHE_TYPE_V" != "q8_0" ]]; then
+    CLI_CMD="$CLI_CMD -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
+fi
+CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
 
-eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"How can I optimize an LLM on Linux?\" -n 300"
+# Enable TurboQuant 3-stage async pipeline and Sparse-V by default
+CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold 1e-6"
+
+eval "env TURBO_ASYNC_PIPELINE=1 TURBO_SPARSE_V=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed!"

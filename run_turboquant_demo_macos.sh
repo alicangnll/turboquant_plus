@@ -50,28 +50,11 @@ install_libomp() {
     fi
 }
 
-# Part 1: Python Prototype
-echo ">>> [1/4] Setting up Python environment and installing dependencies..."
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e "."
-
-echo ">>> Starting theoretical compression demo via Python..."
-python3 benchmarks/demo.py
-echo "-----------------------------------------------"
-
-# Part 2: Downloading and compiling llama.cpp fork (Apple Silicon - Metal)
-echo ">>> [2/4] Downloading llama.cpp TurboQuant version for practical use..."
+# Part 1: Downloading and compiling llama.cpp fork (Apple Silicon - Metal)
+echo ">>> [1/4] Downloading llama.cpp TurboQuant version for practical use..."
 install_libomp
 
-if [ ! -d "llama-cpp-turboquant" ]; then
-    git clone https://github.com/TheTom/llama-cpp-turboquant.git
-fi
-
 cd llama-cpp-turboquant
-echo ">>> Switching to the relevant working branch..."
-git checkout feature/turboquant-kv-cache
 
 echo ">>> Compiling C++ engine with Dual Acceleration (Metal + OpenMP)..."
 cmake -B build \
@@ -268,6 +251,14 @@ EOF
     N_HEADS="$CLI_NUM_HEADS"
     HEAD_DIM="$CLI_HEAD_DIM"
 
+    # GPT-OSS-20B (MoE) şu anda turbo KV tipleriyle ggml graph assert veriyor.
+    # Bu model için şimdilik KV cache'i güvenli q8_0 moduna sabitliyoruz.
+    if [[ "$model_choice" == "6" || "$model_choice" == "20B" || "$model_choice" == "20b" ]]; then
+        echo ">>> GPT-OSS-20B detected: falling back to q8_0 KV cache for graph stability."
+        CACHE_TYPE_K="q8_0"
+        CACHE_TYPE_V="q8_0"
+    fi
+
     echo "    Config: ctx=$CTX, cache-type-k=$CACHE_TYPE_K, cache-type-v=$CACHE_TYPE_V"
 else
     # Fallback to built-in heuristics (original behaviour)
@@ -458,11 +449,20 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     export DYLD_LIBRARY_PATH="${OMP_DYLD_PATH:-}:$DYLD_LIBRARY_PATH"
 fi
 
-CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" $EXTRA_ARGS -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
+CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" $EXTRA_ARGS"
+
+# KV cache tipleri sadece turbo modlarda güvenli; GPT-OSS-20B için q8_0'a düşürdüğümüzde
+# explicit cache-type vermeye gerek yok (llama.cpp varsayılanları kullanır).
+if [[ "$CACHE_TYPE_K" != "q8_0" || "$CACHE_TYPE_V" != "q8_0" ]]; then
+    CLI_CMD="$CLI_CMD -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
+fi
 CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
 [ -n "$CHAT_TEMPLATE" ] && CLI_CMD="$CLI_CMD --chat-template \"$CHAT_TEMPLATE\""
 
-eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
+# Enable TurboQuant 3-stage async pipeline and Sparse-V by default
+CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold 1e-6"
+
+eval "env TURBO_ASYNC_PIPELINE=1 TURBO_SPARSE_V=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed! You've run an LLM on your device with TurboQuant."

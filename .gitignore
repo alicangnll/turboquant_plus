@@ -25,3 +25,4 @@ niah_v2_results/
 wikitext-103-raw/
 benchmark-results-raw/*.kld
 *.draft.md
+llama-cpp-turboquant/models/

@@ -1,1 +1,0 @@
-{"boundary_n_layers":2,"cache_type_k":"turbo4","cache_type_v":"turbo4","ctx_len":4096,"head_dim":128,"mem_mode":"ultra-eco","model_choice":"1","model_size_b":8.0,"ngl_hint":32,"num_heads":32,"num_layers":32}

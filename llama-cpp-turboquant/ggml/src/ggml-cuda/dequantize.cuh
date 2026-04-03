@@ -1,0 +1,104 @@
+#include "common.cuh"
+#include "turbo-quant.cuh"
+
+static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q4_0 * x = (const block_q4_0 *) vx;
+
+    const float d = x[ib].d;
+
+    const int vui = x[ib].qs[iqs];
+
+    v.x = vui & 0xF;
+    v.y = vui >> 4;
+
+    v.x = (v.x - 8.0f) * d;
+    v.y = (v.y - 8.0f) * d;
+}
+
+static __device__ __forceinline__ void dequantize_q4_1(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q4_1 * x = (const block_q4_1 *) vx;
+
+    const float2 dm = __half22float2(x[ib].dm);
+
+    const int vui = x[ib].qs[iqs];
+
+    v.x = vui & 0xF;
+    v.y = vui >> 4;
+
+    v.x = (v.x * dm.x) + dm.y;
+    v.y = (v.y * dm.x) + dm.y;
+}
+
+static __device__ __forceinline__ void dequantize_q5_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q5_0 * x = (const block_q5_0 *) vx;
+
+    const float d = x[ib].d;
+
+    uint32_t qh;
+    memcpy(&qh, x[ib].qh, sizeof(qh));
+
+    const int xh_0 = ((qh >> (iqs +  0)) << 4) & 0x10;
+    const int xh_1 = ((qh >> (iqs + 12))     ) & 0x10;
+
+    v.x = ((x[ib].qs[iqs] & 0xf) | xh_0);
+    v.y = ((x[ib].qs[iqs] >>  4) | xh_1);
+
+    v.x = (v.x - 16.0f) * d;
+    v.y = (v.y - 16.0f) * d;
+}
+
+static __device__ __forceinline__ void dequantize_q5_1(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q5_1 * x = (const block_q5_1 *) vx;
+
+    const float2 dm = __half22float2(x[ib].dm);
+
+    uint32_t qh;
+    memcpy(&qh, x[ib].qh, sizeof(qh));
+
+    const int xh_0 = ((qh >> (iqs +  0)) << 4) & 0x10;
+    const int xh_1 = ((qh >> (iqs + 12))     ) & 0x10;
+
+    v.x = ((x[ib].qs[iqs] & 0xf) | xh_0);
+    v.y = ((x[ib].qs[iqs] >>  4) | xh_1);
+
+    v.x = (v.x * dm.x) + dm.y;
+    v.y = (v.y * dm.x) + dm.y;
+}
+
+static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q8_0 * x = (const block_q8_0 *) vx;
+
+    const float d = x[ib].d;
+
+    v.x = x[ib].qs[iqs + 0];
+    v.y = x[ib].qs[iqs + 1];
+
+    v.x *= d;
+    v.y *= d;
+}
+
+// Turbo4: 4-bit PolarQuant (nibble packed), block size 128
+// iqs is the element index within the block (even), produces elements iqs and iqs+1
+static __device__ __forceinline__ void dequantize_turbo4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_turbo4_0 * x = (const block_turbo4_0 *) vx;
+    const float norm = __half2float(x[ib].norm);
+    v.x = turbo4_dequant_element(&x[ib], iqs + 0, norm);
+    v.y = turbo4_dequant_element(&x[ib], iqs + 1, norm);
+}
+
+// Turbo3: 3-bit PolarQuant (2-bit qs + 1-bit sign), block size 32
+// iqs is the element index within the block (even), produces elements iqs and iqs+1
+static __device__ __forceinline__ void dequantize_turbo3_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_turbo3_0 * x = (const block_turbo3_0 *) vx;
+    const float norm = __half2float(x[ib].norm);
+    v.x = turbo3_dequant_element(&x[ib], iqs + 0, norm);
+    v.y = turbo3_dequant_element(&x[ib], iqs + 1, norm);
+}
+
+// Turbo2: 2-bit PolarQuant (2-bit qs only, no sign), block size 32
+static __device__ __forceinline__ void dequantize_turbo2_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_turbo2_0 * x = (const block_turbo2_0 *) vx;
+    const float norm = __half2float(x[ib].norm);
+    v.x = turbo2_dequant_element(&x[ib], iqs + 0, norm);
+    v.y = turbo2_dequant_element(&x[ib], iqs + 1, norm);
+}
