@@ -109,10 +109,26 @@ echo ">>> CPU Optimization: Using $THREADS performance cores for inference."
 echo ""
 
 # Part 4: Downloading an Example Model
-if [ -n "$1" ]; then
-    model_choice="$1"
-    echo ">>> [3/4] Model selected via argument: $model_choice"
-else
+
+CONFIG_JSON=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CONFIG_JSON="$2"
+      shift 2
+      ;;
+    *)
+      # Backwards-compatible: first non-flag argument is treated as model_choice
+      if [ -z "$model_choice" ]; then
+        model_choice="$1"
+      fi
+      shift 1
+      ;;
+  esac
+done
+
+if [ -z "$model_choice" ]; then
     echo ">>> [3/4] Select the model you want to run:"
     echo "1) Llama 3.1 8B Instruct (~5 GB - Fast, General Purpose)"
     echo "2) Qwen 2.5 32B Instruct (~20 GB - Balanced, Good Performance)"
@@ -121,6 +137,21 @@ else
     echo "5) Llama-3-405B / 500B Class (~250 GB - Extreme Memory / NVMe SWAP Test)"
     echo "6) GPT 20B (OpenAI OSS-20B Class - ~12 GB)"
     read -p "Your choice (1/2/3/4/5/6) [Default: 4]: " model_choice
+fi
+
+# If user did not supply a config file, auto-generate one via LLMTuning bridge
+if [ -z "$CONFIG_JSON" ]; then
+    CONFIG_JSON="$ROOT_DIR/tq_cli_config_${model_choice}_${mem_choice}.json"
+    echo ">>> Auto-generating LLMTuning + TurboQuant config: $CONFIG_JSON"
+    if python3 -m turboquant.cli_config_export \
+        --model-choice "$model_choice" \
+        --mem-choice "$mem_choice" \
+        > "$CONFIG_JSON"; then
+        echo ">>> Config generated successfully."
+    else
+        echo ">>> Warning: Failed to generate CLI config, falling back to built-in heuristics."
+        CONFIG_JSON=""
+    fi
 fi
 
 mkdir -p models
@@ -142,6 +173,7 @@ case "$model_choice" in
     MODEL_FILE="models/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     ;;
   5|"500B"|"500b")
+    MODEL_NAME="Llama 3.1 405B"
     MODEL_URL="https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
     MODEL_FILE="models/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
     ;;
@@ -176,42 +208,108 @@ fi
 # Part 4: Running the Model with TurboQuant Settings
 echo ">>> [4/4] Starting the model with TurboQuant memory compression..."
 
-if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
-    echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
-    EXTRA_ARGS="-c 512 -b 128 -ub 64 -t 8"
-    CACHE_TYPE_K="turbo2"
-    CACHE_TYPE_V="turbo2"
-    echo "    Extra parameters (Extreme Swap): $EXTRA_ARGS with turbo2+2"
-elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
-    EXTRA_ARGS="-c $CTX -b 512 -ub 256 -t 12 --repeat-penalty 1.1 --top-p 0.9"
-    CACHE_TYPE_K="turbo4"
-    CHAT_TEMPLATE="command-r"
-    if [ "$mem_choice" -eq 3 ]; then CACHE_TYPE_V="turbo2"; else CACHE_TYPE_V="turbo4"; fi
-    echo "    Extra parameters: $EXTRA_ARGS"
-elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
-    echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
-    # Drop context and batch to save peak memory
-    CTX=512
-    [ "$mem_choice" -eq 1 ] && CTX=1024
-    [ "$mem_choice" -eq 3 ] && CTX=256
-    EXTRA_ARGS="-c $CTX -b 32 -ub 32 -sm none --repeat-penalty 1.1 --top-p 0.9"
-    # To hit 16GB, we use aggressive turbo2 for both K and V in Balanced/Eco
-    CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo2"
-    CHAT_TEMPLATE="qwen2"
-    echo ">>> 20B Class Model Detected (OpenAI MoE): Maximum Performance Mode (FA enabled)..."
-    EXTRA_ARGS="-c 2048 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 -fa on"
-    CACHE_TYPE_K="turbo4"
-    CACHE_TYPE_V="turbo4"
-    CHAT_TEMPLATE=""
+# If a LLMTuning/TurboQuant config JSON is provided, prefer its policy
+if [ -n "$CONFIG_JSON" ] && [ -f "$CONFIG_JSON" ]; then
+    echo ">>> Using LLMTuning + TurboQuant CLI config from: $CONFIG_JSON"
+    # Expect a single-line JSON produced by turboquant.cli_config_export
+    CLI_CTX_LEN=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("ctx_len", 2048))
+EOF
+)
+    CLI_CACHE_K=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("cache_type_k", "turbo4"))
+EOF
+)
+    CLI_CACHE_V=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("cache_type_v", "turbo4"))
+EOF
+)
+    CLI_NUM_LAYERS=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("num_layers", 32))
+EOF
+)
+    CLI_NUM_HEADS=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("num_heads", 32))
+EOF
+)
+    CLI_HEAD_DIM=$(python3 - <<EOF
+import json,sys
+path = "$CONFIG_JSON"
+with open(path,"r") as f:
+    data = json.load(f)
+print(data.get("head_dim", 128))
+EOF
+)
+
+    CTX="$CLI_CTX_LEN"
+    CACHE_TYPE_K="$CLI_CACHE_K"
+    CACHE_TYPE_V="$CLI_CACHE_V"
+    NUM_LAYERS="$CLI_NUM_LAYERS"
+    N_HEADS="$CLI_NUM_HEADS"
+    HEAD_DIM="$CLI_HEAD_DIM"
+
+    echo "    Config: ctx=$CTX, cache-type-k=$CACHE_TYPE_K, cache-type-v=$CACHE_TYPE_V"
 else
-    # 8B and smaller: Use q8_0 for high accuracy and reliable attention kernel compatibility
-    MODEL_NAME="Llama 3.1 8B"
-    EXTRA_ARGS="-c 4096 -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 --temp 0.1"
-    CACHE_TYPE_K="q8_0"
-    CACHE_TYPE_V="q8_0"
-    CHAT_TEMPLATE=""  # Auto-detect to avoid PEG parser errors
-    SKIP_SYSTEM_PROMPT=0
+    # Fallback to built-in heuristics (original behaviour)
+    if [[ "$model_choice" == "5" || "$model_choice" == "500"*"b" || "$model_choice" == "500"*"B" ]]; then
+        echo ">>> 500B+ Class Model Detected: Activating EXTREME swap-safe settings..."
+        CTX=512
+        EXTRA_ARGS="-c $CTX -b 128 -ub 64 -t 8"
+        CACHE_TYPE_K="turbo2"
+        CACHE_TYPE_V="turbo2"
+        echo "    Extra parameters (Extreme Swap): $EXTRA_ARGS with turbo2+2"
+    elif [[ "$model_choice" == "3" || "$model_choice" == "100"*"b" || "$model_choice" == "100"*"B" ]]; then
+        CTX=1024
+        EXTRA_ARGS="-c $CTX -b 512 -ub 256 -t 12 --repeat-penalty 1.1 --top-p 0.9"
+        CACHE_TYPE_K="turbo4"
+        CACHE_TYPE_V="turbo4"
+        CHAT_TEMPLATE="command-r"
+        echo "    Extra parameters: $EXTRA_ARGS"
+    elif [[ "$model_choice" == "2" || "$model_choice" == "32B" || "$model_choice" == "32b" ]]; then
+        echo ">>> 32B Class Model Detected: Tuning for $MEM_LABEL mode (Target 16GB RSS)..."
+        CTX=512
+        [ "$mem_choice" -eq 1 ] && CTX=1024
+        [ "$mem_choice" -eq 3 ] && CTX=256
+        EXTRA_ARGS="-c $CTX -b 32 -ub 32 -sm none --repeat-penalty 1.1 --top-p 0.9"
+        CACHE_TYPE_K="turbo4"
+        CACHE_TYPE_V="turbo2"
+        CHAT_TEMPLATE="qwen2"
+    elif [[ "$model_choice" == "6" || "$model_choice" == "20B" || "$model_choice" == "20b" ]]; then
+        echo ">>> 20B Class Model Detected (OpenAI MoE): Maximum Performance Mode (FA enabled)..."
+        CTX=2048
+        EXTRA_ARGS="-c $CTX -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 -fa on"
+        CACHE_TYPE_K="turbo4"
+        CACHE_TYPE_V="turbo4"
+        CHAT_TEMPLATE=""
+    else
+        # 8B and smaller: Use q8_0 for high accuracy and reliable attention kernel compatibility
+        CTX=4096
+        EXTRA_ARGS="-c $CTX -b 512 -ub 256 --repeat-penalty 1.1 --top-p 0.9 --temp 0.1"
+        CACHE_TYPE_K="q8_0"
+        CACHE_TYPE_V="q8_0"
+        CHAT_TEMPLATE=""  # Auto-detect to avoid PEG parser errors
+        SKIP_SYSTEM_PROMPT=0
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -325,18 +423,23 @@ calculate_ngl() {
 }
 
 # Per-model architecture parameters (heads, head_dim, context already set in EXTRA_ARGS)
-# Parse context from EXTRA_ARGS for KV estimation
-CTX_LEN=$(echo "$EXTRA_ARGS" | grep -o '\-c [0-9]*' | awk '{print $2}')
-[ -z "$CTX_LEN" ] && CTX_LEN=2048
+# If CTX/NUM_LAYERS/N_HEADS/HEAD_DIM were populated from a config JSON above,
+# reuse them; otherwise derive defaults heuristically.
+if [ -z "$CTX_LEN" ]; then
+    CTX_LEN=$(echo "$EXTRA_ARGS" | grep -o '\-c [0-9]*' | awk '{print $2}')
+fi
+[ -z "$CTX_LEN" ] && CTX_LEN="${CTX:-2048}"
 
-case "$model_choice" in
-  1|"8B"|"8b")     NUM_LAYERS=32; N_HEADS=32; HEAD_DIM=128 ;;
-  2|"32B"|"32b")   NUM_LAYERS=64; N_HEADS=40; HEAD_DIM=128 ;;
-  3|"100B"|"100b") NUM_LAYERS=96; N_HEADS=128; HEAD_DIM=128 ;;
-  5|"500B"|"500b") NUM_LAYERS=126; N_HEADS=128; HEAD_DIM=128 ;;
-  6|"20B"|"20b")   NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # GPT-OSS-20B (MoE)
-  *)               NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # 0.5B
-esac
+if [ -z "$NUM_LAYERS" ] || [ -z "$N_HEADS" ] || [ -z "$HEAD_DIM" ]; then
+  case "$model_choice" in
+    1|"8B"|"8b")     NUM_LAYERS=32; N_HEADS=32; HEAD_DIM=128 ;;
+    2|"32B"|"32b")   NUM_LAYERS=64; N_HEADS=40; HEAD_DIM=128 ;;
+    3|"100B"|"100b") NUM_LAYERS=96; N_HEADS=128; HEAD_DIM=128 ;;
+    5|"500B"|"500b") NUM_LAYERS=126; N_HEADS=128; HEAD_DIM=128 ;;
+    6|"20B"|"20b")   NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # GPT-OSS-20B (MoE)
+    *)               NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64 ;;  # 0.5B
+  esac
+fi
 
 METAL_BUDGET=$(get_metal_budget_mb)
 KV_EST=$(estimate_kv_mb "$CTX_LEN" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CACHE_TYPE_K")

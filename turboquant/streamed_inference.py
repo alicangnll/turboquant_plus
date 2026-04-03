@@ -49,7 +49,7 @@ from typing import Optional, Callable
 
 import numpy as np
 
-from turboquant.LLMTuning_bridge import (
+from turboquant.llmtuning_bridge import (
     LLMTuningTurboSession,
     CachePolicy,
     LayerKV,
