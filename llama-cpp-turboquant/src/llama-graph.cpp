@@ -1878,12 +1878,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
         cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
 
-        ggml_flash_attn_ext_add_sinks(cur, sinks);
-        ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
-
         // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
-        // For MLA, V is a view of K with different ne[0] (e.g. V=512, K=576).
-        // Group size must come from K (which determines the WHT rotation), not V.
         if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
             const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
             const ggml_tensor * group_src = k_is_turbo ? k : v;
@@ -1896,20 +1891,14 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         }
 
         if (v_mla) {
-#if 0
-            // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
-            // However, the code is optimized for dimensions 0 and 1 being large, so this is inefficient.
-            cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
-            cur = ggml_mul_mat(ctx0, v_mla, cur);
-#else
-            // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
-            // The permutations are noops and only change how the tensor data is interpreted.
-            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
+            // Note: FA-Metal already returns [H, Q, N, B]. We can multiply directly.
             cur = ggml_mul_mat(ctx0, v_mla, cur);
             cb(cur, "fattn_mla", il);
-            cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-            cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
-#endif
+            // Result is [d_out, Q, N, B]. Already in consistent format.
+        } else {
+            // TurboQuant: FA output [H, Q, N, B] is already in the logical layout for 2D flattening.
+            // No permute needed here.
+            if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
         }
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
@@ -2167,21 +2156,17 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
     cb(cur, "kqv_out", il);
 
-    // TurboQuant: if V was padded, the output has padded dimensions.
-    // Extract original V head_dim after inverse WHT (applied inside build_attn_mha).
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
-        const int64_t orig_v_head = hparams.n_embd_head_v(il);
         const int64_t padded_v_head = v->ne[0];
+        const int64_t orig_v_head = v_cur ? v_cur->ne[0] : hparams.n_embd_head_v(il);
         if (padded_v_head != orig_v_head) {
-            const int64_t n_head_v = hparams.n_head_kv(il);
+            const int64_t n_head_cur = cur->ne[0] / padded_v_head;
             const int64_t n_tokens_cur = cur->ne[1];
-            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_v, n_tokens_cur);
-            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_v, n_tokens_cur,
+            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_cur, n_tokens_cur);
+            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_cur, n_tokens_cur,
                                cur->nb[1], cur->nb[2], 0);
             cur = ggml_cont(ctx0, cur);
-            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_v, n_tokens_cur);
+            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_cur, n_tokens_cur);
         }
-    }
 
     if (inp->self_v_rot) {
         cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);
@@ -2288,13 +2273,13 @@ ggml_tensor * llm_graph_context::build_attn(
         const int64_t padded_v_head = v->ne[0];     // padded V head_dim in cache
         if (padded_v_head != orig_v_head) {
             // cur is 2D: (padded_v_head * n_head, n_tokens) after build_attn_mha
-            const int64_t n_head_v = hparams.n_head_kv(il);
+            const int64_t n_head_cur = cur->ne[0] / padded_v_head;
             const int64_t n_tokens_cur = cur->ne[1];
-            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_v, n_tokens_cur);
-            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_v, n_tokens_cur,
+            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_cur, n_tokens_cur);
+            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_cur, n_tokens_cur,
                                cur->nb[1], cur->nb[2], 0);
             cur = ggml_cont(ctx0, cur);
-            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_v, n_tokens_cur);
+            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_cur, n_tokens_cur);
         }
     }
 
@@ -2388,20 +2373,17 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
     cb(cur, "kqv_out", il);
 
-    // TurboQuant: if V was padded, extract original V head_dim after inverse WHT
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
-        const int64_t orig_v_head = hparams.n_embd_head_v(il);
         const int64_t padded_v_head = v->ne[0];
+        const int64_t orig_v_head = v_cur ? v_cur->ne[0] : hparams.n_embd_head_v(il);
         if (padded_v_head != orig_v_head) {
-            const int64_t n_head_v = hparams.n_head_kv(il);
+            const int64_t n_head_cur = cur->ne[0] / padded_v_head;
             const int64_t n_tokens_cur = cur->ne[1];
-            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_v, n_tokens_cur);
-            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_v, n_tokens_cur,
+            cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_cur, n_tokens_cur);
+            cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_cur, n_tokens_cur,
                                cur->nb[1], cur->nb[2], 0);
             cur = ggml_cont(ctx0, cur);
-            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_v, n_tokens_cur);
+            cur = ggml_reshape_2d(ctx0, cur, orig_v_head * n_head_cur, n_tokens_cur);
         }
-    }
 
     if (inp->self_v_rot) {
         cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);

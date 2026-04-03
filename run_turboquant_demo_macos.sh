@@ -119,6 +119,7 @@ if [ -z "$model_choice" ]; then
     echo "4) Qwen 2.5 0.5B Instruct (~400 MB - For Quick Testing Only)"
     echo "5) Llama-3-405B / 500B Class (~250 GB - Extreme Memory / NVMe SWAP Test)"
     echo "6) GPT 20B (OpenAI OSS-20B Class - ~12 GB)"
+    echo "7) Gemma 4 31B (Google - ~18 GB)"
     read -p "Your choice (1/2/3/4/5/6) [Default: 4]: " model_choice
 fi
 
@@ -164,6 +165,12 @@ case "$model_choice" in
     MODEL_NAME="GPT 20B (OSS)"
     MODEL_URL="https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q4_K_M.gguf"
     MODEL_FILE="models/openai_gpt-oss-20b-Q4_K_M.gguf"
+    ;;
+
+  7|"31B"|"31b")
+    MODEL_NAME="Gemma 4 31B"
+    MODEL_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
+    MODEL_FILE="models/gemma-4-31B-it-Q4_K_M.gguf"
     ;;
   *)
     MODEL_NAME="Qwen 2.5 0.5B"

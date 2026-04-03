@@ -26,3 +26,6 @@ wikitext-103-raw/
 benchmark-results-raw/*.kld
 *.draft.md
 llama-cpp-turboquant/models/
+*.gguf
+tq_cli_config_*.json
+*.json
