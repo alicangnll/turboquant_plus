@@ -147,7 +147,6 @@ git checkout feature/turboquant-kv-cache
 echo ">>> Compiling with $BACKEND flags..."
 cmake -B build -DCMAKE_BUILD_TYPE=Release $CMAKE_FLAGS
 cmake --build build -j --target llama-cli
-cd "$ROOT_DIR"
 
 # Part 3: Configuration
 echo ">>> [3/5] Select Memory Optimization Level:"
@@ -229,27 +228,9 @@ NGL=$(calculate_ngl "$MODEL_FILE" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CTX" "$
 
 echo ">>> Calculated NGL: $NGL / $NUM_LAYERS"
 
-# [LLMTuning Detection]
-USE_LLMTUNING=0
-if [[ "$CACHE_TYPE_K" == "turbo4" && "$CACHE_TYPE_V" == "turbo2" ]]; then
-    USE_LLMTUNING=1
-fi
-
 CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl \"$NGL\" -t \"$THREADS\" -c \"$CTX\" $EXTRA_STABLE -fa on -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\" -sys \"$SYSTEM_PROMPT\""
 
-if [ "$USE_LLMTUNING" -eq 1 ]; then
-    echo "==========================================================="
-    echo "🚀 [LLMTuning Logic Enabled] <<<"
-    echo ">>> Mode: Memory-Optimized Layer Sharding (AirLLM)"
-    echo ">>> Benefit: Stable inference for 32B+ models on 16GB RAM"
-    echo "==========================================================="
-    
-    cd "$ROOT_DIR"
-    source .venv/bin/activate
-    python3 -m turboquant.streamed_inference -m "$MODEL_FILE" --model-size "$NUM_LAYERS" --cache-type-k "$CACHE_TYPE_K" --cache-type-v "$CACHE_TYPE_V" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
-else
-    eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
-fi
+eval "env TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"How can I optimize an LLM on Linux?\" -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed!"

@@ -28,7 +28,7 @@ Combined peak memory for 32B (64 layers, 40 heads, d=128, ctx=4096):
   - With:    ~350 MB (1 layer) + ~675 MB (KV compressed) = ~1 GB active
 
 Usage:
-    from turboquant.llmtuning_bridge import LLMTuningTurboSession
+    from turboquant.LLMTuning_bridge import LLMTuningTurboSession
 
     session = LLMTuningTurboSession(model_size_b=32, num_layers=64,
                                   num_heads=40, head_dim=128)
@@ -340,22 +340,6 @@ class LLMTuningTurboSession:
         self._kv_store[layer_idx] = lkv
         return lkv
 
-    def compress(self, k: np.ndarray | torch.Tensor, v: np.ndarray | torch.Tensor, layer_idx: int) -> LayerKV:
-        """Compress K and V tensors for a single layer.
-
-        Handles both Numpy and PyTorch tensors (auto-converts to Numpy CPU).
-        """
-        if hasattr(k, "detach"):
-            k = k.detach().cpu().numpy()
-        if hasattr(v, "detach"):
-            v = v.detach().cpu().numpy()
-
-        return self.compress_layer_kv(layer_idx, k, v)
-
-    def decompress(self, layer_idx: int, lkv: Optional[LayerKV] = None) -> tuple[np.ndarray, np.ndarray]:
-        """Decompress K and V tensors for a layer. Alias for restore_layer_kv."""
-        return self.restore_layer_kv(layer_idx, lkv)
-
     def restore_layer_kv(
         self,
         layer_idx: int,
@@ -624,3 +608,67 @@ class LLMTuningTurboSession:
             "max_context": self.policy.max_context,
         }
 
+    def shutdown(self) -> None:
+        """Shut down the async compression executor cleanly."""
+        self._compress_executor.shutdown(wait=True)
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
+
+    # ------------------------------------------------------------------
+    # Memory / diagnostic report
+    # ------------------------------------------------------------------
+
+    def memory_report(self) -> str:
+        """Return a human-readable memory report string."""
+        policy = self.policy
+        raw_mb = self._total_uncompressed_bytes / 1024 / 1024
+        comp_mb = self._total_compressed_bytes / 1024 / 1024
+        ratio = raw_mb / max(comp_mb, 1e-9)
+        avg_compress_ms = (
+            1000 * sum(self._layer_compress_times) / max(len(self._layer_compress_times), 1)
+        )
+
+        lines = [
+            "=" * 60,
+            "LLMTuning + TurboQuant KV Cache Session Report",
+            "=" * 60,
+            f"  Model size:        {self.model_size_b:.0f}B",
+            f"  Layers:            {self.num_layers}",
+            f"  Heads:             {self.num_heads}",
+            f"  Head dim:          {self.head_dim}",
+            f"  K precision:       turbo{policy.k_bits} ({policy.k_bits}-bit)",
+            f"  V precision:       turbo{policy.v_bits} ({policy.v_bits}-bit)",
+            f"  Boundary layers:   first/last {policy.boundary_n_layers} @ turbo{policy.boundary_k_bits}",
+            f"  Max context:       {policy.max_context}",
+            "",
+            f"  KV raw size:       {raw_mb:.1f} MB",
+            f"  KV compressed:     {comp_mb:.1f} MB",
+            f"  Compression ratio: {ratio:.2f}×",
+            f"  Avg compress time: {avg_compress_ms:.2f} ms/layer",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+    @property
+    def compression_ratio(self) -> float:
+        """Overall KV compression ratio achieved so far."""
+        if self._total_compressed_bytes == 0:
+            return 0.0
+        return self._total_uncompressed_bytes / self._total_compressed_bytes
+
+    def config_summary(self) -> dict:
+        """Return a dict of current session configuration."""
+        return {
+            "model_size_b": self.model_size_b,
+            "num_layers": self.num_layers,
+            "k_bits": self.policy.k_bits,
+            "v_bits": self.policy.v_bits,
+            "boundary_k_bits": self.policy.boundary_k_bits,
+            "boundary_n_layers": self.policy.boundary_n_layers,
+            "max_context": self.policy.max_context,
+        }

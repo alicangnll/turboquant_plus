@@ -407,25 +407,6 @@ python3 -m pytest tests/ -v
 # Windows (CUDA / OpenMP Optimized)
 run_turboquant_demo.bat
 
-```
-
-### 🚀 Hızlı Başlangıç (Akıllı Yönlendirme)
-
-Resmi demo betikleri artık model seçiminize ve önbellek ayarlarınıza göre en uygun motoru otomatik olarak seçer.
-
-#### 1. Yüksek Performans Modu (C++)
-8B modeller veya 32GB+ RAM sistemlerde maksimum hız için betikler yüksek hızlı C++ çekirdeğini kullanır.
-```bash
-# macOS
-./run_turboquant_demo_macos.sh
-# Linux
-./run_turboquant_demo_linux.sh
-```
-
----
-
-### 🏛️ Architecture Map
-
 # Quick compression demo (no model needed)
 python3 benchmarks/demo.py
 

@@ -5,8 +5,6 @@ Two implementations:
 2. Fast structured rotation via Hadamard + random sign flips — O(d log d), approximate
 """
 
-import warnings
-
 import numpy as np
 
 
@@ -32,9 +30,7 @@ def random_rotation_dense(d: int, rng: np.random.Generator) -> np.ndarray:
     Q = Q * signs[np.newaxis, :]
     # Ensure proper rotation (det = +1) — flip first column if det = -1
     # Use slogdet for numerical stability (det overflows for large d)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        sign, _ = np.linalg.slogdet(Q)
+    sign, _ = np.linalg.slogdet(Q)
     if sign < 0:
         Q[:, 0] = -Q[:, 0]
     return Q

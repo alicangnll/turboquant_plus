@@ -77,27 +77,19 @@ Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabil
 - cmake ve C++ derleyici
 - Xcode Command Line Tools (macOS)
 
-### 🚀 Hızlı Başlangıç (Akıllı Yönlendirme)
-
-Resmi demo betikleri artık model seçiminize ve önbellek ayarlarınıza göre en uygun motoru otomatik olarak seçer.
-
-#### 1. Yüksek Performans Modu (C++)
-8B modeller veya 32GB+ RAM sistemlerde maksimum hız için betikler yüksek hızlı C++ çekirdeğini kullanır.
+### Hızlı Başlangıç (Demo)
 ```bash
-# macOS
-./run_turboquant_demo_macos.sh
-# Linux
+git clone https://github.com/TheTom/turboquant_plus.git
+cd turboquant_plus
+# macOS: Metal + OpenMP için optimize edildi
+./run_turboquant_demo.sh
+
+# Linux: CUDA + ROCm + OpenMP için optimize edildi
 ./run_turboquant_demo_linux.sh
+
+# Windows: CUDA + OpenMP için optimize edildi
+run_turboquant_demo.bat
 ```
-
-#### 2. Otomatik Tuning / AirLLM Modu (Python)
-**16GB RAM cihazlarda 32B+ modeller için önerilir.** Büyük bir model (Qwen 2.5 32B gibi) seçtiğinizde, betik otomatik olarak **LLMTuning Mantığını** (asenkron katman-sharding) Python motoru üzerinden devreye alır.
--   **Tetikleyici**: Qwen 32B seçimi veya manuel `turbo4-K` ve `turbo2-V` yapılandırması.
--   **Avantaj**: Düşük bellekli cihazlarda kilitlenmeden (OOM önleyerek) güvenli çalışma.
-
----
-
-### 🏛️ Mimari Harita
 
 ### llama.cpp ile Kullanım
 Sunucu (server) veya CLI modunda `--cache-type-k turbo4 --cache-type-v turbo4` parametrelerini ekleyerek TurboQuant aktif edilebilir.

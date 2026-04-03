@@ -160,29 +160,13 @@ if "%model_choice%"=="6" set NGL=12
 echo ^>>> Memory Mode: %MEM_LABEL%
 echo ^>>> Running %MODEL_NAME% with CTX=%CTX% and NGL=%NGL%
 
-:: [LLMTuning Detection]
-set USE_LLMTUNING=0
-if "%CACHE_TYPE_K%"=="turbo4" (
-    if "%CACHE_TYPE_V%"=="turbo2" (
-        set USE_LLMTUNING=1
-    )
-)
-
 set TURBO_LAYER_ADAPTIVE=7
 set CMD_RUN=llama-cpp-turboquant\build\bin\Release\llama-cli.exe -m "%MODEL_FILE%" -ngl %NGL% -c %CTX% -b 512 -ub 256 -fa on -cnv --cache-type-k %CACHE_TYPE_K% --cache-type-v %CACHE_TYPE_V% --temp %TEMP%
+
 if "%SKIP_SYSTEM%"=="" set CMD_RUN=%CMD_RUN% -sys %SYSTEM_PROMPT%
 if not "%CHAT_TEMPLATE%"=="" set CMD_RUN=%CMD_RUN% --chat-template %CHAT_TEMPLATE%
 
-if "%USE_LLMTUNING%"=="1" (
-    echo ===========================================================
-    echo ^🚀 [LLMTuning Logic Enabled] ^<^<^<
-    echo ^>^>^> Mode: Memory-Optimized Layer Sharding (AirLLM)
-    echo ^>^>^> Benefit: Stable inference for 32B+ models on 16GB RAM
-    echo ===========================================================
-    python -m turboquant.streamed_inference -m "%MODEL_FILE%" --model-size "%NGL%" --cache-type-k "%CACHE_TYPE_K%" --cache-type-v "%CACHE_TYPE_V%" -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
-) else (
-    %CMD_RUN% -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
-)
+%CMD_RUN% -p "Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?" -n 300
 
 echo -----------------------------------------------
 echo ^>>> Demo completed!
