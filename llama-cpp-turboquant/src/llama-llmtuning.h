@@ -69,7 +69,7 @@ public:
     void wait_all();
 
 private:
-    const struct llama_context & ctx;
+    // const struct llama_context & ctx;
     std::thread worker;
     std::mutex mtx;
     std::condition_variable cv;

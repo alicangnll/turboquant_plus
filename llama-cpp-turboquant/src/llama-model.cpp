@@ -339,10 +339,6 @@ llama_model::~llama_model() {
         ggml_cpu_repack_unregister_tqr();
     }
 
-    if (tqr_dummy_ptr) {
-        // dummy check
-    }
-
     if (!tqr_mapping_path.empty()) {
         LLAMA_LOG_INFO("%s: [TURBO] Cleaning up TQR cache file: %s\n", __func__, tqr_mapping_path.c_str());
         unlink(tqr_mapping_path.c_str());

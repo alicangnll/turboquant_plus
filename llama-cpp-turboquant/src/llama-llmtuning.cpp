@@ -161,7 +161,7 @@ void llama_layer_prefetcher::worker_loop() {
 // llama_kv_compress_worker
 //
 
-llama_kv_compress_worker::llama_kv_compress_worker(const struct llama_context & ctx) : ctx(ctx) {
+llama_kv_compress_worker::llama_kv_compress_worker(const struct llama_context & /*ctx*/) {
     worker = std::thread(&llama_kv_compress_worker::worker_loop, this);
 }
 
