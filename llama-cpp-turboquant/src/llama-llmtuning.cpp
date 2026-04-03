@@ -141,41 +141,9 @@ void llama_kv_compress_worker::worker_loop() {
             continue;
         }
 
-        const int64_t ne0 = j.k->ne[0]; // head_dim
-        const int64_t ne1 = j.k->ne[1]; // n_heads * n_seq
-        
-        // We compress row by row. Each row is one head's KV data for one token.
-        // head_dim is usually 128.
-        
-        std::vector<float> tmp_k(ne0);
-        std::vector<float> tmp_v(ne0);
-        
-        // Determine types and quantization functions
-        // For now, we hardcode compression to TURBO2_0 as specified in the LLMTuning session
-        // In a real implementation, we would check environment variables or context params.
-        
-        for (int64_t i = 0; i < ne1; ++i) {
-            // 1. Dequantize K to float
-            const auto * traits = ggml_get_type_traits(j.k->type);
-            if (!traits->to_float) continue;
-
-            traits->to_float(
-                (const char *)j.k->data + i * ggml_row_size(j.k->type, ne0),
-                tmp_k.data(),
-                ne0
-            );
-            
-            // 2. Quantize K to TURBO2 (if that's our target)
-            quantize_row_turbo2_0_ref(tmp_k.data(), (block_turbo2_0 *)((char *)j.k->data + i * ggml_row_size(GGML_TYPE_TURBO2_0, ne0)), ne0);
-            
-            // Repeat for V
-            traits->to_float(
-                (const char *)j.v->data + i * ggml_row_size(j.v->type, ne0),
-                tmp_v.data(),
-                ne0
-            );
-            quantize_row_turbo2_0_ref(tmp_v.data(), (block_turbo2_0 *)((char *)j.v->data + i * ggml_row_size(GGML_TYPE_TURBO2_0, ne0)), ne0);
-        }
+        // STUBBED: Do NOT modify KV cache from CPU to avoid corruption with Metal
+        // Metal backend handles TQ natively. We keep this thread for orchestration.
+        // We simply skip the quantization work and signal completion.
 
         {
             std::unique_lock<std::mutex> lock(mtx);
@@ -205,6 +173,32 @@ void llama_tuning_session::step(int il, struct ggml_tensor * k, struct ggml_tens
     // 3. Compress KV for layer N (async, Thread 3)
     if (compressor) {
         compressor->compress_async(il, k, v);
+    }
+}
+
+void llama_tuning_session::prefetch_all() const {
+    const int n_layer = (int)ctx.get_model().layers.size();
+    for (int il = 0; il < n_layer; ++il) {
+        if (il + 1 < n_layer) {
+            prefetcher->prefetch(il + 1);
+        }
+    }
+}
+
+void llama_tuning_session::compress_all(const struct llama_memory_i & memory) const {
+    const int n_layer = (int)ctx.get_model().layers.size();
+    for (int il = 0; il < n_layer; ++il) {
+        struct ggml_tensor * k = memory.get_layer_k(il);
+        struct ggml_tensor * v = memory.get_layer_v(il);
+        if (k && v && compressor) {
+            compressor->compress_async(il, k, v);
+        }
+    }
+}
+
+void llama_tuning_session::wait_all() const {
+    if (compressor) {
+        compressor->wait_all();
     }
 }
 

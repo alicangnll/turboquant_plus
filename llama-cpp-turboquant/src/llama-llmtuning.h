@@ -97,6 +97,12 @@ struct llama_tuning_session {
     // Core pipeline step for layer N
     void step(int il, struct ggml_tensor * k, struct ggml_tensor * v) const;
 
+    // Trigger prefetching for ALL layers (safe to run in parallel with GPU)
+    void prefetch_all() const;
+
+    // Trigger KV compression for ALL layers (run AFTER GPU compute)
+    void compress_all(const struct llama_memory_i & memory) const;
+
     // Block until all asynchronous stages are completed for the current batch.
     void wait_all() const;
 

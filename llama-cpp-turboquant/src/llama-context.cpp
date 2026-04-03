@@ -2200,28 +2200,28 @@ ggml_status llama_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
+    ggml_status status = GGML_STATUS_SUCCESS;
+
     if (tuning_session) {
-        ggml_backend_sched_set_eval_callback(sched.get(), [](ggml_tensor * t, bool ask, void * user_data) -> bool {
-            llama_context * ctx = (llama_context *)user_data;
-            (void)t; (void)ask; (void)ctx;
-            
-            /*
-            // STUBBED FOR DIAGNOSTICS: Isolate performance bottleneck
-            if (!ask) {
-                // ...
-            }
-            */
-
-            if (ctx->cparams.cb_eval) {
-                return ctx->cparams.cb_eval(t, ask, ctx->cparams.cb_eval_user_data);
-            }
-            return true;
-        }, this);
+        // Safe Hybrid Architecture:
+        // 1. Ensure previous KV compression is completely finished
+        tuning_session->wait_all();
+        
+        // 2. Start prefetching weights for T+1 (Asynchronous)
+        tuning_session->prefetch_all();
+        
+        // 3. Start GPU compute for current pass T (Asynchronous)
+        status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+        
+        // 4. Wait for GPU completion specifically for the KV cache region
+        ggml_backend_sched_synchronize(sched.get());
+        
+        // 5. Start KV compression for current pass T (Asynchronous, but serial with GPU)
+        tuning_session->compress_all(*memory);
     } else {
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     }
-
-    auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
