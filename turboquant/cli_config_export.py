@@ -2,6 +2,37 @@ import json
 import argparse
 import sys
 
+# Documented in docs/memory-rss-targets.md — primary tuning goal is peak process RSS.
+_MEM_TIER_PROFILE = {
+    "1": {
+        "batch_size": 512,
+        "ubatch_size": 256,
+        "rss_target_note": "Performance: higher peak RSS acceptable; prioritize throughput.",
+    },
+    "2": {
+        "batch_size": 256,
+        "ubatch_size": 128,
+        "rss_target_note": "Balanced: moderate peak RSS (~24GB-class systems).",
+    },
+    "3": {
+        "batch_size": 32,
+        "ubatch_size": 32,
+        "rss_target_note": "Ultra-Eco: minimize peak RSS (~16GB-class systems).",
+    },
+}
+
+def _apply_mem_tier(config, mem_choice):
+    tier = _MEM_TIER_PROFILE.get(mem_choice, _MEM_TIER_PROFILE["2"])
+    config["batch_size"] = tier["batch_size"]
+    config["ubatch_size"] = tier["ubatch_size"]
+    config["rss_target_note"] = tier["rss_target_note"]
+    config["primary_ram_metric"] = "peak_rss"
+    config["lossless_definition"] = (
+        "product_default: stable chat on same GGUF quant; turbo KV is approximate vs f16 KV"
+    )
+    config["mem_tier"] = mem_choice
+    return config
+
 def get_optimal_config(model_choice, mem_choice):
     # Default values - LLMTuning Universal Minimization
     config = {
@@ -17,14 +48,27 @@ def get_optimal_config(model_choice, mem_choice):
 
     # Model specific architectures (LLMTuning Intelligence)
     if model_choice in ["1", "8B", "8b"]: # Llama 3.1 8B
-        config.update({
-            "num_layers": 32,
-            "num_heads": 32,
-            "head_dim": 128,
-            "ctx_len": 4096 if mem_choice == "1" else (2048 if mem_choice == "2" else 1024),
-            "cache_type_k": "turbo4", # Minimized even on performance mode for 8B
-            "cache_type_v": "turbo4"
-        })
+        # Ultra-Eco: very low -ngl + turbo4 KV on hybrid CPU/Metal produced garbage tokens;
+        # use q8_0 KV (still compact vs f16) and let the demo script raise GPU weight budget.
+        if mem_choice == "3":
+            config.update({
+                "num_layers": 32,
+                "num_heads": 32,
+                "head_dim": 128,
+                "ctx_len": 1024,
+                "cache_type_k": "q8_0",
+                "cache_type_v": "q8_0",
+                "extra_args": "-fa on",
+            })
+        else:
+            config.update({
+                "num_layers": 32,
+                "num_heads": 32,
+                "head_dim": 128,
+                "ctx_len": 4096 if mem_choice == "1" else 2048,
+                "cache_type_k": "turbo4",
+                "cache_type_v": "turbo4",
+            })
 
     elif model_choice in ["2", "32B", "32b"]: # Qwen 2.5 32B
         config.update({
@@ -71,7 +115,12 @@ def get_optimal_config(model_choice, mem_choice):
             "extra_args": "-fa on"
         })
 
-    return config
+    out = _apply_mem_tier(config, mem_choice)
+    if model_choice in ["1", "8B", "8b"] and mem_choice == "3":
+        out["lossless_definition"] = (
+            "8B Ultra-Eco: q8_0 KV + higher GPU layer budget; avoids garbled hybrid turbo4/low-NGL path"
+        )
+    return out
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

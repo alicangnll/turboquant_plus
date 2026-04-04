@@ -217,10 +217,10 @@ if [[ "$CACHE_TYPE_K" != "q8_0" || "$CACHE_TYPE_V" != "q8_0" ]]; then
 fi
 CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
 
-# Enable TurboQuant 3-stage async pipeline and Sparse-V by default
-CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold 1e-6"
+# TurboQuant async pipeline; Sparse-V off by default (Metal: export TURBO_SPARSE_V=1 to opt in)
+CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold -1"
 
-eval "env TURBO_ASYNC_PIPELINE=1 TURBO_SPARSE_V=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
+eval "env TURBO_ASYNC_PIPELINE=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed!"

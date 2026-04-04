@@ -3,7 +3,7 @@
 
 > **TurboQuant+** and **LLMTuning** are twin technologies designed to run massive language models (32B–500B) on consumer hardware (16GB–64GB RAM) with zero-compromise speed and stability.
 
-[Getting Started Guide](docs/getting-started.md) | [Architecture Map](MAP.md) | [Development Roadmap](PLAN.md) | [Turkish Guide (Türkçe)](README_TR.md)
+[Getting Started Guide](docs/getting-started.md) | [Architecture Map](MAP.md) | [Memory / RSS targets](docs/memory-rss-targets.md) | [Development Roadmap](PLAN.md) | [Turkish Guide (Türkçe)](README_TR.md)
 
 ---
 
@@ -29,7 +29,7 @@ LLMTuning is the "OS" for your LLM. It manages hardware resources to ensure the 
 TurboQuant+ provides the high-speed compression that shrinks the model's working memory (KV Cache) by up to 6.4x.
 
 *   **PolarQuant (2/3/4-bit)**: Leverages random Walsh-Hadamard rotations to transform attention tensors into a Beta-distribution, enabling optimal scalar quantization with near-zero quality loss.
-*   **Sparse V Optimization**: Uses an attention-gated dequantizer that skips low-priority Value (V) tensors, boosting long-context decode speeds by **~22.8%**.
+*   **Sparse V Optimization** (optional): On Metal, set `TURBO_SPARSE_V=1` before launch to skip low-mass V dequants using a **relative** cutoff vs the running softmax sum (safe for short context). The macOS demo leaves this off by default for stable chat quality.
 *   **Dual Acceleration**: A parallel compute model that runs transformer math on the **GPU (Metal/CUDA)** while simultaneously performing rotations and quantization on the **CPU (OpenMP)**.
 *   **Boundary Protection**: Maintains the first and last layers at higher precision (e.g., Q8_0) to preserve long-range coherence and formatting.
 

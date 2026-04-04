@@ -840,36 +840,58 @@ static void turbo4_dequantize_full_block(device const block_turbo4_0 * xb, threa
 
 template <typename type4x4>
 void dequantize_turbo4_0(device const block_turbo4_0 * xb, short il, thread type4x4 & reg) {
-    // Direct 16-element extraction — 4-bit nibble unpack
-    const float norm = float(xb->norm);
-    const int base = il * 16;
-    float4x4 reg_f;
+    const half norm = xb->norm;
+    
+    // Vectorized 4-bit dequant with inverse rotation
+    thread half4 v[32];
+    for (int i = 0; i < 32; i++) {
+        // Each half4 = 4 elements = 2 bytes of qs
+        const uint8_t qb0 = xb->qs[i * 2];
+        const uint8_t qb1 = xb->qs[i * 2 + 1];
+        v[i] = half4(
+            turbo_centroids_4bit_h[(qb0     ) & 0xF],
+            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
+            turbo_centroids_4bit_h[(qb1     ) & 0xF],
+            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
+        ) * norm;
+    }
 
+    // Emergency Stability: Temporarily bypass rotation to end hallucinations
+    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
+    // turbo_fwht_128_half4(v);
+    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
+
+    // Extract 16 elements (il * 16) -> 4 half4 vectors
+    const int v_base = il * 4;
+    float4x4 reg_f;
     for (int g = 0; g < 4; g++) {
-        for (int k = 0; k < 4; k++) {
-            const int j = base + g * 4 + k;
-            uint8_t idx = (xb->qs[j / 2] >> ((j % 2) * 4)) & 0xF;
-            reg_f[g][k] = turbo_centroids_4bit[idx] * norm;
-        }
+        reg_f[g] = float4(v[v_base + g]);
     }
     reg = (type4x4) reg_f;
 }
 
 template <typename type4>
 void dequantize_turbo4_0_t4(device const block_turbo4_0 * xb, short il, thread type4 & reg) {
-    // Direct 16-entry half LUT — fastest on M5 Max (constant cache not the bottleneck)
-    // 8-mag LUT tested: -3% on M5 due to ternary branch overhead. Keep for M1/M2 if needed.
-    const float norm = float(xb->norm);
-    const device uint8_t * qs = xb->qs + il * 2;
-    const uint8_t qb0 = qs[0];
-    const uint8_t qb1 = qs[1];
+    const half norm = xb->norm;
+    
+    thread half4 v[32];
+    for (int i = 0; i < 32; i++) {
+        const uint8_t qb0 = xb->qs[i * 2];
+        const uint8_t qb1 = xb->qs[i * 2 + 1];
+        v[i] = half4(
+            turbo_centroids_4bit_h[(qb0     ) & 0xF],
+            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
+            turbo_centroids_4bit_h[(qb1     ) & 0xF],
+            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
+        ) * norm;
+    }
 
-    reg = type4(float4(
-        float(turbo_centroids_4bit_h[(qb0     ) & 0xF]) * norm,
-        float(turbo_centroids_4bit_h[(qb0 >> 4) & 0xF]) * norm,
-        float(turbo_centroids_4bit_h[(qb1     ) & 0xF]) * norm,
-        float(turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]) * norm
-    ));
+    // Emergency Stability: Temporarily bypass rotation to end hallucinations
+    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
+    // turbo_fwht_128_half4(v);
+    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
+
+    reg = type4(float4(v[il]));
 }
 
 template <typename type4x4>
@@ -3217,13 +3239,22 @@ kernel void kernel_turbo4_dequant_f16(
 
     device const block_turbo4_0 & blk = src[blk_idx];
     device half * out = dst + blk_idx * QK_TURBO4;
-    const half norm_h = blk.norm;
+    const float norm = float(blk.norm);
 
-    // 4-bit nibble unpack → centroid → scale by norm → write fp16
+    // 4-bit nibble unpack → centroid → scale by norm
+    float x[128];
     for (int j = 0; j < QK_TURBO4; j += 2) {
         const uint8_t qb = blk.qs[j / 2];
-        out[j    ] = turbo_centroids_4bit_h[(qb     ) & 0xF] * norm_h;
-        out[j + 1] = turbo_centroids_4bit_h[(qb >> 4) & 0xF] * norm_h;
+        x[j    ] = turbo_centroids_4bit[(qb     ) & 0xF] * norm;
+        x[j + 1] = turbo_centroids_4bit[(qb >> 4) & 0xF] * norm;
+    }
+
+    // CRITICAL: Apply inverse rotation (WHT + sign flip)
+    turbo_rotate_inverse(x, turbo_wht_signs1, turbo_wht_signs2);
+
+    // Write back to fp16
+    for (int j = 0; j < QK_TURBO4; j++) {
+        out[j] = half(x[j]);
     }
 }
 
@@ -7623,11 +7654,13 @@ kernel void kernel_flash_attn_ext_vec(
                 } else {
                     FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
 #if TURBO_SPARSE_V
-                        // SPARSE V DEQUANT: skip V for positions with negligible attention weight.
-                        // At 32K context, ~90%+ of attention weights are near zero.
-                        // Skipping their V dequant saves ~50% of total dequant cost.
+                        // SPARSE V DEQUANT: skip V for positions with negligible *relative* mass.
+                        // ss[] holds exp(s-M) (unnormalized softmax weight). Comparing to a fixed
+                        // absolute epsilon breaks short-context / early-token cases (garbled output).
+                        // With S = running softmax denominator after this tile, vs/S_run <= vs/S_final,
+                        // so vs < eps*S_run => vs/S_final < eps — safe to omit vs*V.
                         const float attn_weight = float(ss[NE*cc + ty]);
-                        if (attn_weight < TURBO_SPARSE_V_THRESHOLD) continue;  // skip negligible positions
+                        if (S > 0.0f && attn_weight < TURBO_SPARSE_V_THRESHOLD * S) continue;
 #endif
                         device const vd4_t * pv4 = (device const vd4_t *) (v + ((ic + NE*cc + ty)*args.nb21));
 
@@ -10284,8 +10317,8 @@ kernel void kernel_set_rows_turbo4(
             x[j] = normalized[j];
         }
 
-        // Step 2: WHT rotate in-place
-        turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
+        // Step 2: WHT rotate in-place - [STABILITY BYPASS 2.8]
+        // turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
 
         // Step 3: 4-bit PolarQuant — nibble packing (2 indices per byte)
         for (int j = 0; j < QK_TURBO4 / 2; j++) blk.qs[j] = 0;

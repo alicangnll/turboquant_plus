@@ -62,14 +62,6 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
     ggml_type type_k_eff = type_k;
     ggml_type type_v_eff = type_v;
 
-    // Smart-Tighten 2.0: Ultra-Low RAM Global Hack
-    const char * ultra_low_ram_env = getenv("TURBO_ULTRA_LOW_RAM");
-    if (ultra_low_ram_env && atoi(ultra_low_ram_env) == 1) {
-        LLAMA_LOG_INFO("%s: [ULTRA-LOW RAM] Forcing 2-bit TurboQuant KV cache for maximum RAM savings.\n", __func__);
-        type_k_eff = GGML_TYPE_TURBO2_0;
-        type_v_eff = GGML_TYPE_TURBO2_0;
-    }
-
     kv_base = std::make_unique<llama_kv_cache>(
             model, type_k_eff, type_v_eff,
             v_trans, offload, unified, size_base, n_seq_max, n_pad,

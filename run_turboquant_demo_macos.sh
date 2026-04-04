@@ -8,9 +8,11 @@ ROOT_DIR=$(pwd)
 export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
 
 echo "=============== TURBOQUANT+ DEMO ==============="
+# RAM goals and RSS measurement: see docs/memory-rss-targets.md and scripts/measure_rss_macos.sh
 
 # Helper: Detect and Install libomp (OpenMP) for high-speed CPU inference
-SYSTEM_PROMPT="You are a Technical AI. Explain complex topics simply."
+# [TURBO 2.1] Turkish Technical System Prompt
+SYSTEM_PROMPT="Sen TurboQuant+ (2026 Edition) yardımcısısın. Apple Silicon üzerinde LLMTuning optimizasyonu ile en yüksek performansta çalışıyorsun. Sorulara teknik, kesin ve yardımsever yanıtlar vermelisin. Yanıtların her zaman Türkçe olmalıdır (kullanıcı aksini istemedikçe)."
 install_libomp() {
     echo ">>> Checking for libomp (OpenMP Support)..."
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -60,7 +62,7 @@ if [ ! -d "build" ]; then
 fi
 
 # Part 2: Memory Optimization Level
-echo ">>> [2/4] Select Memory Optimization Level:"
+echo ">>> [2/4] Select Memory Optimization Level (primary tuning: peak RSS — see docs/memory-rss-targets.md):"
 echo "1) Performance (High GPU, fast, needs 32GB+ RAM)"
 echo "2) Balanced    (Moderate GPU, 24GB RAM safe)"
 echo "3) Ultra-Eco    (Minimal RAM, stable on 16GB systems)"
@@ -108,6 +110,10 @@ HEADS=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['num_head
 DIM=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['head_dim'])")
 TEMPLATE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['chat_template'])")
 EXTRA_POLICY=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON')).get('extra_args', ''))")
+BATCH_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['batch_size'])")
+UBATCH_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['ubatch_size'])")
+RSS_NOTE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON')).get('rss_target_note', ''))")
+LOSSLESS_NOTE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON')).get('lossless_definition', ''))")
 
 # Model Mapping
 case "$model_choice" in
@@ -148,6 +154,13 @@ GRAPH_MB=$(( MODEL_MB / 2 ))
 [[ $GRAPH_MB -gt 5000 ]] && GRAPH_MB=5000
 [[ $GRAPH_MB -lt 100 ]] && GRAPH_MB=100
 
+# 8B + Ultra-Eco: 10%% weight budget + hybrid CPU/Metal with aggressive turbo KV produced garbage tokens.
+# Policy JSON uses q8_0 KV; raise GPU layer budget here (model_choice is known; MEM_BUDGET_PCT was set before model pick).
+if [[ "$mem_choice" == "3" && "$model_choice" == "1" ]]; then
+  MEM_BUDGET_PCT=55
+  echo ">>> 8B Ultra-Eco: weight budget ${MEM_BUDGET_PCT}% + q8_0 KV (policy) for stable full-layer Metal offload."
+fi
+
 AVAIL_MB=$(python3 -c "print(int(($METAL_MB - $KV_MB - $GRAPH_MB) * $MEM_BUDGET_PCT / 100))")
 BPL=$(( MODEL_MB / LAYERS ))
 NGL=$(( AVAIL_MB / BPL ))
@@ -157,14 +170,15 @@ NGL=$(( AVAIL_MB / BPL ))
 echo ">>> TurboQuant+ Standard Sharding:"
 echo "    Budget: ${METAL_MB} MB | Target: ${AVAIL_MB} MB for Weights"
 echo "    Policy: Cache-K=$CACHE_K, Cache-V=$CACHE_V, Context=$CTX"
+echo "    Batch/Ubatch: $BATCH_SIZE / $UBATCH_SIZE (from LLMTuning policy JSON)"
+[[ -n "$RSS_NOTE" ]] && echo "    RSS goal: $RSS_NOTE"
+[[ -n "$LOSSLESS_NOTE" ]] && echo "    Quality note: $LOSSLESS_NOTE"
 
-# [ULTRA-ECO 2.7] Force extremely low batch sizes to drop Compute buffer
-CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl $NGL -t $THREADS -c $CTX $EXTRA_POLICY"
+CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl $NGL -t $THREADS -c $CTX --batch-size $BATCH_SIZE --ubatch-size $UBATCH_SIZE $EXTRA_POLICY"
 if [[ "$mem_choice" == "3" ]]; then
-    CLI_CMD="$CLI_CMD --batch-size 32 --ubatch-size 32"
-    echo "    Status: Ultra-Eco Mode (Forced Batch=32) - Shrinking Compute Buffer."
+    echo "    Status: Ultra-Eco — lowest peak-RSS tier; if quality suffers, use option 2 (Balanced)."
 else
-    echo "    Status: LLMTuning Active Sharding Enabled (Universal Minimize)."
+    echo "    Status: LLMTuning Active Sharding (tier $mem_choice)."
 fi
 
 # Special Chat Handling for 20B MoE
@@ -174,12 +188,11 @@ else
     CLI_CMD="$CLI_CMD -cnv --chat-template \"$TEMPLATE\" -sys \"$SYSTEM_PROMPT\""
 fi
 
-# TurboQuant+ Core Flags
-CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold 1e-6 --cache-type-k $CACHE_K --cache-type-v $CACHE_V"
+# TurboQuant+ Core Flags (Sparse-V: off by default; export TURBO_SPARSE_V=1 to opt into GPU skip)
+CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold -1 --cache-type-k $CACHE_K --cache-type-v $CACHE_V"
 
 echo ">>> Launching Engine..."
-export TURBO_ASYNC_PIPELINE=1 
-export TURBO_SPARSE_V=1 
+export TURBO_ASYNC_PIPELINE=1
 export TURBO_LAYER_ADAPTIVE=7
 
 eval "$CLI_CMD -n 256"

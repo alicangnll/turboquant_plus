@@ -162,7 +162,6 @@ echo ^>>> Running %MODEL_NAME% with CTX=%CTX% and NGL=%NGL%
 
 set TURBO_LAYER_ADAPTIVE=7
 set TURBO_ASYNC_PIPELINE=1
-set TURBO_SPARSE_V=1
 set CMD_RUN=llama-cpp-turboquant\build\bin\Release\llama-cli.exe -m "%MODEL_FILE%" -ngl %NGL% -c %CTX% -b 512 -ub 256 -fa on %EXTRA_ARGS% --temp %TEMP%
 
 :: KV cache types are only safe in turbo modes; when we fall back to q8_0 for GPT-OSS-20B,
@@ -170,8 +169,8 @@ set CMD_RUN=llama-cpp-turboquant\build\bin\Release\llama-cli.exe -m "%MODEL_FILE
 if not "%CACHE_TYPE_K%"=="q8_0" set CMD_RUN=%CMD_RUN% -cnv --cache-type-k %CACHE_TYPE_K% --cache-type-v %CACHE_TYPE_V%
 if "%CACHE_TYPE_K%"=="q8_0" if not "%CACHE_TYPE_V%"=="q8_0" set CMD_RUN=%CMD_RUN% -cnv --cache-type-k %CACHE_TYPE_K% --cache-type-v %CACHE_TYPE_V%
 
-:: Enable TurboQuant 3-stage async pipeline and Sparse-V by default
-set CMD_RUN=%CMD_RUN% --turbo-async --sparse-v-threshold 1e-6
+:: TurboQuant async; Sparse-V off (Metal: set TURBO_SPARSE_V=1 to opt in)
+set CMD_RUN=%CMD_RUN% --turbo-async --sparse-v-threshold -1
 
 if "%SKIP_SYSTEM%"=="" set CMD_RUN=%CMD_RUN% -sys %SYSTEM_PROMPT%
 if not "%CHAT_TEMPLATE%"=="" set CMD_RUN=%CMD_RUN% --chat-template %CHAT_TEMPLATE%
