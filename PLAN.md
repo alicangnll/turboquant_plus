@@ -39,7 +39,10 @@ Input vector x ∈ R^d
 
 ---
 
-## Implementation Tasks
+---
+
+## Implementation Tasks: TurboQuant+ (Quantization Core)
+Focuses on the mathematical implementation of extreme KV cache compression and high-performance kernels.
 
 ### Phase 1: Core Algorithms (NumPy)
 
@@ -166,7 +169,12 @@ Input vector x ∈ R^d
   - Port to MLX for Apple Silicon optimization ⏳
   - Use Metal shaders for rotation + quantization ⏳
 
-### Phase 6: Async Pipeline & Joint Integration (2026 Engine)
+---
+
+## Implementation Tasks: LLMTuning (Orchestration Layer)
+Focuses on memory virtualization, async prefetching, and hardware-aware resource management.
+
+### Phase 6: Async Pipeline & Joint Integration
 
 - [x] **Task 6.1 — 3-Stage Asynchronous Pipeline**
   - Implement `LayerPrefetcher` (Thread 1) for background weight loading. ✅
@@ -197,7 +205,7 @@ Input vector x ∈ R^d
   - Identify and suppress redundant `CPU_REPACK` buffer allocation via `-DGGML_CPU_REPACK=OFF`. ✅
   - Achieve **~1.1GB RAM** footprint on 8B models (79% reduction vs baseline). ✅
 
-### Phase 9: Documentation & Release Prep
+### Phase 9: Final Polish & Documentation
 
 - [x] **Task 9.1 — Architectural Mapping**
   - Update `MAP.md` and `README.md` with Active Sharding and 2026 Engine logic. ✅

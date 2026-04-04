@@ -2,7 +2,7 @@
 
 > ### [Getting Started Guide](docs/getting-started.md) | [Configuration Recommendations](docs/turboquant-recommendations.md) | [llama.cpp Fork](https://github.com/TheTom/llama-cpp-turboquant)
 
-Implementation of [TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) (ICLR 2026) with implementation work, experiments, and follow-on findings beyond the base paper. KV cache compression for local LLM inference.
+Implementation of [TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) (ICLR 2026) and **LLMTuning** orchestration for extreme local LLM efficiency. This project combines state-of-the-art KV cache compression with intelligent memory management to run massive models on consumer hardware.
 
 ## Note
 
@@ -12,12 +12,13 @@ If individual pieces prove useful and stable, the intent is to upstream them inc
 
 ## What's In This Branch
 
-- Experimental TurboQuant-related integrations for `llama.cpp`
+- **TurboQuant+ Core**: State-of-the-art KV cache compression (2/3/4-bit PolarQuant)
+- **LLMTuning Orchestration**: Hardware-aware memory budgeting and active sharding
 - Benchmark and quality validation across models, contexts, and hardware
 - Backend-specific implementation work and performance experiments
 - Documentation and writeups intended to make testing and reproduction easier
-- **Architectural Map**: Detailed component interactions and data flow can be found in [MAP.md](MAP.md)
-- **Async-Graph Orchestration**: True 3-stage pipeline (llama.cpp implementation) for maximum throughput.
+- **Architectural Map**: Detailed component interactions and data flow in [MAP.md](MAP.md)
+- **Async-Graph Orchestration**: True 3-stage pipeline for maximum throughput
 - Candidate ideas that may be worth upstreaming individually if they prove stable
 
 ## Current Findings
@@ -36,47 +37,33 @@ Compresses transformer KV cache **3.8-6.4x** using PolarQuant + Walsh-Hadamard r
 
 Validated end-to-end from 1.5B to **104B** on M5 Max via llama.cpp Metal. **104B at 128K context on a MacBook** with turbo3 (PPL 4.024, 74 GB peak memory).
 
-## 🚀 2026 Engine Updates: Stability & Memory Optimization
+## 🚀 2026 Engine Technologies: Decoupled Excellence
 
-The latest TurboQuant+ engine includes significant architectural improvements for stable inference of 32B–500B models on low-RAM Apple Silicon and high-performance Linux (CUDA/ROCm) devices:
+TurboQuant+ and LLMTuning work in tandem to provide the most efficient inference experience.
 
-### 1. Memory Optimization Levels (VRAM & RAM Control)
-You can now choose between three operational modes at startup:
-- **Performance**: Maximum GPU usage, fast inference. Best for 32GB+ RAM.
-- **Balanced**: Optimized for 24-32GB systems (M-Pro series). Uses 30-40% GPU budget.
-- **Ultra-Eco**: Safe for 8-16GB systems. Minimal GPU, Duo-2bit cache, 512 context. **Now with Active Layer Unloading (`madvise`) and `mlock` suppression**, allowing 8B models to run in as little as **~1.1GB total RAM**.
+### 🧩 LLMTuning: Intelligent Memory Orchestration
+LLMTuning is the "brain" that manages how hardware resources are allocated to ensure stability even under extreme memory pressure.
 
+- **Hardware-Aware NGL Automation**: Automatically detects platform memory budgets (e.g., Metal `recommendedMaxWorkingSetSize`) and calculates the safest `-ngl` layers.
+- **Active Sharding & Smart MMAP**: For models larger than physical RAM (100B+), LLMTuning uses `madvise(MADV_DONTNEED)` to unload layers from RAM immediately after processing, allowing stable operation via NVMe SSD Swap.
+- **Ultra-Eco Optimization**: Enables 8B models to run in as little as **1.1GB total RAM** by suppressing redundant allocations (Repack Suppression) and using aggressive layer unloading.
+- **Performance Modes**: Choose between *Performance* (Max GPU), *Balanced* (Safe VRAM), and *Ultra-Eco* (Low RAM) at startup.
 
-### 2. Dual Acceleration: Metal + OpenMP
-The engine now detects and leverages both Apple Metal (GPU) and OpenMP (CPU) simultaneously. 
-- **GPU**: Handles the transformer layers and KV cache arithmetic.
-- **CPU**: Performance Cores (P-Cores) are automatically isolated for background KV compression and Walsh-Hadamard rotations, preventing UI stuttering and maximizing throughput.
+### ⚡ TurboQuant+: The Quantization Core
+TurboQuant+ is the high-speed engine providing the actual compression that shrinks the model's working memory.
 
-### 3. Hybrid KV Cache (`turbo4` + `turbo2`)
-TurboQuant now leverages independent precision for Key and Value tensors. Keeping **K-cache** at 4-bit (`turbo4`) preserves attention intelligence, while compressing **V-cache** at 2-bit (`turbo2`) drastically reduces wired memory footprint.
+- **PolarQuant Compression**: 2-bit (`turbo2`), 3-bit (`turbo3`), and 4-bit (`turbo4`) KV cache compression with near-zero quality loss.
+- **Dual Acceleration**: Simultaneously leverages **Metal (GPU)** for transformer math and **OpenMP (CPU)** for Walsh-Hadamard rotations, preventing UI stuttering.
+- **Hybrid KV Cache**: Independent precision for K (4-bit) and V (2-bit) tensors to balance attention intelligence with memory savings.
+- **Sparse V Optimization**: Attention-gated dequantization that skips low-weight V positions, increasing decode speed by up to **22.8%** at long context.
+- **Boundary Protection**: Protects first/last layers at higher precision to maintain long-range coherence.
 
-### 4. Hardware-Aware NGL Automation
-The engine automatically detects your platform's `recommendedMaxWorkingSetSize` (Metal Budget) and calculates the safest number of GPU layers (`-ngl`) to prevent system freezes and Metal OOM asserts.
-
-### 5. Smart MMAP & Active Sharding
-For models larger than physical RAM (32B, 100B, 500B), the engine uses intelligent memory mapping (mmap) combined with **Active Sharding**. The prefetcher now automatically **unloads** (`madvise`) layers from RAM as soon as they are processed, ensuring the physical footprint never exceeds the active computation set. This enables stable operation via **NVMe SSD Swap** even when the model size is 10x larger than available RAM.
-
-### 6. Repack Suppression (`-DGGML_CPU_REPACK=OFF`)
-We have implemented a critical fix to prevent duplicate weight allocations during initialization. By suppressing the CPU repack buffer, we reduced the cold-boot memory footprint of an 8B model from 5.4GB to **~1.1GB**, a 79% reduction.
-
-
-### 6. Universal Linux Support (CUDA & ROCm)
-TurboQuant+ is now fully optimized for Linux servers and workstations. The engine automatically detects:
-- **NVIDIA GPU**: Enables the CUDA backend for maximum throughput.
-- **AMD GPU**: Enables the ROCm/HIP backend for high-performance open-source GPU acceleration.
-- **CPU (OpenMP)**: Leverages multi-core AVX/AMX extensions for fast CPU-only inference.
-
-### 8. Stable Async-Graph Pipeline (`--turbo-async`)
-The engine now implements a true 3-stage asynchronous orchestration for llama.cpp:
-- **Prefetch (LLMTuning)**: Loads weights for the next token pass while the GPU is busy, with **Cold Boot** logic to minimize initial RAM surge.
-- **Compute (Metal)**: High-speed native GPU execution.
+### 🚀 Stable Async-Graph Pipeline (`--turbo-async`)
+The engine implements a true 3-stage asynchronous orchestration:
+- **Prefetch (LLMTuning)**: Loads weights for the next token pass while the GPU is busy.
+- **Compute (LLM Engine)**: High-speed native GPU execution.
 - **Signal (TurboQuant)**: Synchronized background signaling for KV cache integrity.
-- **Result**: Record-breaking prompt speeds (**943.7 t/s** on Llama 3.1 8B) and rock-solid stability with zero `@@@@` corruption.
+- **Result**: Record-breaking prompt speeds (**943.7 t/s** on Llama 3.1 8B).
 
 
 - 511+ Python tests, 100% code coverage on diagnostics

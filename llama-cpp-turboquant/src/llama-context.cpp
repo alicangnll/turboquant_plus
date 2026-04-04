@@ -414,7 +414,14 @@ void llama_context::sched_reserve() {
     const int64_t t_start_us = ggml_time_us();
 
     const uint32_t n_seqs = cparams.n_seq_max;
-    const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+    uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+
+    // [ULTRA-LOW RAM] Shrink compute buffer reservation
+    char * ultra_low = getenv("TURBO_ULTRA_LOW_RAM");
+    if (ultra_low && atoi(ultra_low) == 1) {
+        // Capping to 128 tokens for reservation saves ~200MB compute buffer for small models
+        n_tokens = std::min(n_tokens, 128u);
+    }
 
     const size_t max_nodes = this->graph_max_nodes(n_tokens);
 
@@ -2241,8 +2248,12 @@ llm_graph_cb llama_context::graph_get_cb() const {
         }
 
         if (tuning_session && il >= 0) {
-            // Candidate for last tensor of a layer
-            if (strcmp(name, "l_out") == 0 || strcmp(name, "ffn_out") == 0) {
+            // Precise landmarks for Pulse Sharding 2.0
+            if (strcmp(name, "kqv_out") == 0) {
+                attn_ends[cur] = il;
+            }
+            if (strcmp(name, "l_out") == 0 || strcmp(name, "ffn_out") == 0 || strcmp(name, "ffn_moe_out") == 0) {
+                ffn_ends[cur] = il;
                 layer_ends[cur] = il;
             }
         }
@@ -3716,18 +3727,34 @@ bool llama_context::tuning_eval_callback(struct ggml_tensor * t, bool ask, void 
     auto * ctx = (llama_context *) user_data;
     if (ask) return true; // PRE-OP: Continue
 
-    // POST-OP: Layer finished?
+    // POST-OP: Sub-layer or Layer finished?
     if (ctx->tuning_session) {
-        auto it = ctx->layer_ends.find(t);
-        if (it != ctx->layer_ends.end()) {
-            int il = it->second;
+        // [PULSE PHASE 1] End of Attention
+        auto it_attn = ctx->attn_ends.find(t);
+        if (it_attn != ctx->attn_ends.end()) {
+            int il = it_attn->second;
+            // Immediate Evacuation of Attention weights + Prefetch of FFN weights
+            ctx->tuning_session->prefetcher->unload_partial(il, true, false); // Unload Attn
+            ctx->tuning_session->prefetcher->prefetch_partial(il, false, true); // Prefetch FFN
+        }
+
+        // [PULSE PHASE 2] End of FFN (End of Layer)
+        auto it_ffn = ctx->ffn_ends.find(t);
+        if (it_ffn != ctx->ffn_ends.end()) {
+            int il = it_ffn->second;
             
-            // Trigger 3-stage pipeline step for this layer
-            // il is current layer. step() will prefetch il+1 and unload il-1
+            // 1. Evacuate FFN weights
+            ctx->tuning_session->prefetcher->unload_partial(il, false, true); // Unload FFN
+            
+            // 2. Head-start Prefetch of NEXT layer Attention
+            if (il + 1 < (int)ctx->get_model().layers.size()) {
+                ctx->tuning_session->prefetcher->prefetch_partial(il + 1, true, false); // Prefetch next Attn
+            }
+
+            // 3. Trigger KV Compression
             struct ggml_tensor * k = ctx->memory ? ctx->memory->get_layer_k(il) : nullptr;
             struct ggml_tensor * v = ctx->memory ? ctx->memory->get_layer_v(il) : nullptr;
-            
-            ctx->tuning_session->step(il, k, v);
+            ctx->tuning_session->compressor->compress_async(il, k, v);
         }
     }
     return true;

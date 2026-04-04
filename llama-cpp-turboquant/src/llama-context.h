@@ -368,5 +368,7 @@ private:
     };
 
     mutable std::map<struct ggml_tensor *, int> layer_ends;
+    mutable std::map<struct ggml_tensor *, int> attn_ends;
+    mutable std::map<struct ggml_tensor *, int> ffn_ends;
     std::unique_ptr<llama_tuning_session> tuning_session;
 };

@@ -129,9 +129,6 @@ else
 fi
 
 # Advanced Memory Budgeting (NGL Calculation)
-get_metal_budget() {
-    ioreg -r -d 1 -c AGXAccelerator 2>/dev/null | grep -i 'recommendedMaxWorkingSetSize' | awk '{gsub(/[^0-9]/,"",$NF); print $NF/1024/1024}' | head -1 || echo 16384
-}
 
 estimate_kv() {
     local c=$1; local l=$2; local h=$3; local d=$4; local t=$5
@@ -141,11 +138,15 @@ estimate_kv() {
     echo $(( c * l * h * d * 4 * 100 / r / 1024 / 1024 ))
 }
 
-METAL_MB=$(get_metal_budget)
+METAL_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) * 75 / 100 / 1024 / 1024 ))
 KV_MB=$(estimate_kv "$CTX" "$LAYERS" "$HEADS" "$DIM" "$CACHE_K")
 MODEL_MB=$(( $(stat -f%z "$MODEL_FILE") / 1024 / 1024 ))
-GRAPH_MB=2000
-[[ "$LAYERS" -gt 60 ]] && GRAPH_MB=5000 # Larger models need more graph overhead
+
+# [TURBO 2.1] Dynamic Graph Budget (Scales with model size)
+# For small models, 100-200MB is enough. For giant models, we need 5GB+.
+GRAPH_MB=$(( MODEL_MB / 2 )) 
+[[ $GRAPH_MB -gt 5000 ]] && GRAPH_MB=5000
+[[ $GRAPH_MB -lt 100 ]] && GRAPH_MB=100
 
 AVAIL_MB=$(python3 -c "print(int(($METAL_MB - $KV_MB - $GRAPH_MB) * $MEM_BUDGET_PCT / 100))")
 BPL=$(( MODEL_MB / LAYERS ))
@@ -154,12 +155,17 @@ NGL=$(( AVAIL_MB / BPL ))
 [[ $NGL -lt 1 ]] && NGL=1
 
 echo ">>> TurboQuant+ Standard Sharding:"
-echo "    Budget: ${METAL_MB}MB | Target: ${AVAIL_MB}MB for Weights"
+echo "    Budget: ${METAL_MB} MB | Target: ${AVAIL_MB} MB for Weights"
 echo "    Policy: Cache-K=$CACHE_K, Cache-V=$CACHE_V, Context=$CTX"
-echo "    Status: LLMTuning Active Sharding Enabled (Universal Minimize)."
 
-# Construct CLI Command (Sharding Active by default, no mlock needed)
+# [ULTRA-ECO 2.7] Force extremely low batch sizes to drop Compute buffer
 CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl $NGL -t $THREADS -c $CTX $EXTRA_POLICY"
+if [[ "$mem_choice" == "3" ]]; then
+    CLI_CMD="$CLI_CMD --batch-size 32 --ubatch-size 32"
+    echo "    Status: Ultra-Eco Mode (Forced Batch=32) - Shrinking Compute Buffer."
+else
+    echo "    Status: LLMTuning Active Sharding Enabled (Universal Minimize)."
+fi
 
 # Special Chat Handling for 20B MoE
 if [[ "$TEMPLATE" == "none" ]]; then

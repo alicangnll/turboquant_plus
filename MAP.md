@@ -8,17 +8,17 @@ The power of TurboQuant+ comes from combining three distinct optimization layers
 
 ```mermaid
 graph TD
-    subgraph "Stage 1: LLMTuning (Disk I/O) - ASYNC"
+    subgraph "Stage 1: LLMTuning (Orchestration) - ASYNC"
         A[Disk: Model Weights] -->|Async Prefetch| B(CPU RAM: Layer N+1)
         B -->|Active Sharding| H[Auto-Unload Layer N-1]
     end
 
-    subgraph "Stage 2: LLMa (GPU Compute) - MAIN"
+    subgraph "Stage 2: LLM Engine (Native Compute) - MAIN"
         C[GPU: Layer N Weights] -->|Matrix Mul| D{Token Generation}
         E[KV Tensors] -->|Attention| D
     end
 
-    subgraph "Stage 3: TurboQuant (Compression) - SYNC/SIGNAL"
+    subgraph "Stage 3: TurboQuant+ (Compression) - SYNC/SIGNAL"
         D -->|GPU Done Signal| F(CPU: 2/3/4-bit Quantization)
         F -->|Safe Compressed Cache| G[Memory / SSD Swap]
     end
@@ -39,11 +39,11 @@ graph TD
 - **Benefit**: Allows a 104B model to run on a device with only 48GB (or even **16GB** in Ultra-Eco mode) of RAM by treating the SSD as "Extended VRAM".
 
 
-### 2. TurboQuant (The Compression Engine)
-**Role:** KV Cache Optimization.
-- **Quantization (turbo2/3/4)**: Compresses the Key and Value tensors of the model's memory into 2, 3, or 4 bits per parameter.
-- **Boundary Protection**: Automatically keeps the first and last few layers at higher precision to prevent "hallucinations" in long conversations.
-- **Sparse V**: Skips decompressing Key/Value pairs for tokens that have near-zero attention weights.
+### 2. TurboQuant+ (The Quantization Engine)
+**Role:** KV Cache Compression & Data Efficiency.
+- **PolarQuant (turbo2/3/4)**: Compresses the Key and Value tensors of the model's memory into 2, 3, or 4 bits per parameter.
+- **Boundary Protection**: Automatically keeps the first and last few layers at higher precision (q8_0) to prevent "hallucinations" in long conversations.
+- **Sparse V Optimization**: Skips decompressing Key/Value pairs for tokens that have near-zero attention weights, saving power and time.
 
 ### 3. LLMa (The Inference Engine / llama.cpp)
 **Role:** Coordination & Hardware Acceleration.
@@ -55,12 +55,13 @@ graph TD
 
 ## 🚀 Usage Map
 
-| Feature | Controlled By | Script Flag |
+| Feature | Component | Logic |
 | :--- | :--- | :--- |
-| **Sharding (LLMTuning)** | `TURBO_LAYER_ADAPTIVE` | Automatic via `NGL` calculation |
-| **Compression (TurboQuant)** | `--cache-type-k/v` | `turbo2`, `turbo3`, `turbo4` |
-| **GPU Acceleration (LLMa)** | `-ngl` / `-fa` | `-ngl [layers]`, `-fa [on/off]` |
-| **Memory Levels** | `mem_choice` | Select 1 (Perf), 2 (Balanced), 3 (Eco) |
+| **Active Sharding** | **LLMTuning** | `madvise` unload after layer pass |
+| **Native Budgeting** | **LLMTuning** | Auto-detect `hw.memsize` / `ngl` |
+| **KV Compression** | **TurboQuant+** | `turbo2`, `turbo3`, `turbo4` |
+| **GPU Kernels** | **LLM Engine** | Metal / CUDA / ROCm acceleration |
+| **Async Graph** | **Integration** | 3-stage non-blocking orchestration |
 
 ---
 

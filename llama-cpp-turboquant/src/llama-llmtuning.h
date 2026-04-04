@@ -25,11 +25,17 @@ public:
     // Start background prefetch of layer `il` weights.
     void prefetch(int il);
 
+    // Prefetch specific sub-layer parts
+    void prefetch_partial(int il, bool attn, bool ffn);
+
     // Block until layer `il` weights are fully loaded into RAM.
     void wait(int il);
 
     // Release RAM for layer `il` (using madvise MADV_DONTNEED).
     void unload(int il);
+
+    // Release specific sub-layer parts
+    void unload_partial(int il, bool attn, bool ffn);
 
     // Global footprint minimization: evacuate all layers from physical RAM.
     void unload_all() const;
@@ -39,7 +45,13 @@ private:
     std::thread worker;
     std::mutex mtx;
     std::condition_variable cv;
-    int next_layer = -1;
+    
+    struct prefetch_job {
+        int il = -1;
+        bool attn = true;
+        bool ffn = true;
+    };
+    prefetch_job next_job;
     int ready_layer = -1;
     bool should_exit = false;
 

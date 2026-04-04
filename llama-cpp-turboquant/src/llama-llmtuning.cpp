@@ -4,9 +4,10 @@
 #include "llama-model.h"
 #include "llama-kv-cache.h"
 #include <dirent.h>
-#include "../ggml/src/ggml-quants.h"
 
 #include <sys/mman.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <cstring>
 
@@ -45,6 +46,39 @@ void llama_unload_address(void * addr, size_t size) {
     }
 }
 
+// Helper to pre-cache a single tensor's data into RAM using OS-level IO hints
+static void llama_prefetch_tensor(struct ggml_tensor * t) {
+    if (!t || !t->data) return;
+
+    const size_t size = ggml_nbytes(t);
+    const size_t page_size = sysconf(_SC_PAGESIZE);
+    
+    // Align to page boundaries for madvise
+    void * addr = (void *)((uintptr_t)t->data & ~(page_size - 1));
+    size_t length = size + ((uintptr_t)t->data & (page_size - 1));
+    length = (length + page_size - 1) & ~(page_size - 1);
+
+    // MADV_WILLNEED tells the kernel that we expect to access this memory range soon.
+    // This triggers an asynchronous disk read into the page cache.
+    if (madvise(addr, length, MADV_WILLNEED) != 0) {
+        // Fallback: touch the first byte of the tensor if madvise fails
+        (void)*(const volatile char *)t->data;
+    }
+}
+
+// Native budget discovery for macOS (Smart-Tighten 2.8)
+static int64_t llama_get_device_memory_budget() {
+#ifdef __APPLE__
+    int64_t memsize = 0;
+    size_t len = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) == 0) {
+        // Return 75% of physical RAM as recommended working set
+        return (memsize * 75 / 100) / (1024 * 1024);
+    }
+#endif
+    return 16384; // Fallback for other platforms
+}
+
 //
 // llama_layer_prefetcher
 //
@@ -65,15 +99,14 @@ llama_layer_prefetcher::~llama_layer_prefetcher() {
 }
 
 void llama_layer_prefetcher::prefetch(int il) {
+    prefetch_partial(il, true, true);
+}
+
+void llama_layer_prefetcher::prefetch_partial(int il, bool attn, bool ffn) {
     if (il < 0 || il >= (int)model.layers.size()) return;
 
-    // Skip prefetch if layer is already in GPU memory (Metal)
-    if (model.dev_layer(il) && strcmp(ggml_backend_dev_name(model.dev_layer(il)), "CPU") != 0) {
-        return;
-    }
-
     std::unique_lock<std::mutex> lock(mtx);
-    next_layer = il;
+    next_job = {il, attn, ffn};
     cv.notify_one();
 }
 
@@ -83,30 +116,31 @@ void llama_layer_prefetcher::wait(int il) {
 }
 
 void llama_layer_prefetcher::unload(int il) {
-    if (il < 0 || il >= (int)model.layers.size()) return;
+    unload_partial(il, true, true);
+}
 
-    // Skip unload if layer is on GPU
-    if (model.dev_layer(il) && strcmp(ggml_backend_dev_name(model.dev_layer(il)), "CPU") != 0) {
-        return;
-    }
+void llama_layer_prefetcher::unload_partial(int il, bool attn, bool ffn) {
+    if (il < 0 || il >= (int)model.layers.size()) return;
 
     const llama_layer & layer = model.layers[il];
     
-    LLAMA_LOG_INFO("%s: unloading layer %d from physical RAM (Active Sharding)\n", __func__, il);
+    LLAMA_LOG_INFO("%s: pulse unloading layer %d (Attn: %d, FFN: %d)\n", __func__, il, attn, ffn);
 
-    // Unload all major tensors in the layer
-    llama_unload_tensor(layer.wq);
-    llama_unload_tensor(layer.wk);
-    llama_unload_tensor(layer.wv);
-    llama_unload_tensor(layer.wo);
-    llama_unload_tensor(layer.wqkv);
+    if (attn) {
+        llama_unload_tensor(layer.wq);
+        llama_unload_tensor(layer.wk);
+        llama_unload_tensor(layer.wv);
+        llama_unload_tensor(layer.wo);
+        llama_unload_tensor(layer.wqkv);
+        llama_unload_tensor(layer.attn_norm);
+    }
     
-    llama_unload_tensor(layer.ffn_gate);
-    llama_unload_tensor(layer.ffn_down);
-    llama_unload_tensor(layer.ffn_up);
-
-    llama_unload_tensor(layer.attn_norm);
-    llama_unload_tensor(layer.ffn_norm);
+    if (ffn) {
+        llama_unload_tensor(layer.ffn_gate);
+        llama_unload_tensor(layer.ffn_down);
+        llama_unload_tensor(layer.ffn_up);
+        llama_unload_tensor(layer.ffn_norm);
+    }
 }
 
 void llama_layer_prefetcher::unload_all() const {
@@ -120,34 +154,42 @@ void llama_layer_prefetcher::unload_all() const {
 
 void llama_layer_prefetcher::worker_loop() {
     while (true) {
-        int il = -1;
+        prefetch_job job;
         {
             std::unique_lock<std::mutex> lock(mtx);
-            cv.wait(lock, [this] { return next_layer != -1 || should_exit; });
+            cv.wait(lock, [this] { return next_job.il != -1 || should_exit; });
             if (should_exit) {
                 break;
             }
-            il = next_layer;
-            next_layer = -1;
+            job = next_job;
+            next_job.il = -1;
         }
 
+        const int il = job.il;
         if (il < 0 || il >= (int)model.layers.size()) {
             continue;
         }
 
         const llama_layer & layer = model.layers[il];
         
-        // Touch weights to page them in (Thread 1)
-        LLAMA_LOG_DEBUG("%s: prefetching layer %d\n", __func__, il);
-        if (layer.wq)   { (void)*(const volatile char *)layer.wq->data; }
-        if (layer.wk)   { (void)*(const volatile char *)layer.wk->data; }
-        if (layer.wv)   { (void)*(const volatile char *)layer.wv->data; }
-        if (layer.wo)   { (void)*(const volatile char *)layer.wo->data; }
-        if (layer.wqkv) { (void)*(const volatile char *)layer.wqkv->data; }
+        // [PREDICTIVE PAGING] Tell the OS to start reading from SSD in the background
+        LLAMA_LOG_DEBUG("%s: pulse prefetching layer %d (Attn: %d, FFN: %d)\n", __func__, il, job.attn, job.ffn);
         
-        if (layer.ffn_gate) { (void)*(const volatile char *)layer.ffn_gate->data; }
-        if (layer.ffn_down) { (void)*(const volatile char *)layer.ffn_down->data; }
-        if (layer.ffn_up)   { (void)*(const volatile char *)layer.ffn_up->data; }
+        if (job.attn) {
+            llama_prefetch_tensor(layer.wq);
+            llama_prefetch_tensor(layer.wk);
+            llama_prefetch_tensor(layer.wv);
+            llama_prefetch_tensor(layer.wo);
+            llama_prefetch_tensor(layer.wqkv);
+            llama_prefetch_tensor(layer.attn_norm);
+        }
+
+        if (job.ffn) {
+            llama_prefetch_tensor(layer.ffn_gate);
+            llama_prefetch_tensor(layer.ffn_down);
+            llama_prefetch_tensor(layer.ffn_up);
+            llama_prefetch_tensor(layer.ffn_norm);
+        }
 
         {
             std::unique_lock<std::mutex> lock(mtx);
@@ -232,6 +274,10 @@ llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : c
     prefetcher = std::make_unique<llama_layer_prefetcher>(ctx.get_model());
     compressor = std::make_unique<llama_kv_compress_worker>(ctx);
 
+    // [TURBO 2.8] Native Budget Discovery
+    const int64_t budget_mb = llama_get_device_memory_budget();
+    LLAMA_LOG_INFO("%s: [TURBO] Native macOS Budget Discovery: %lld MB\n", __func__, budget_mb);
+
     // TQR (TurboQuant Repack) Hijacking Status check
     char model_desc[256];
     llama_model_desc(&ctx.get_model(), model_desc, sizeof(model_desc));
@@ -262,11 +308,18 @@ llama_tuning_session::llama_tuning_session(const struct llama_context & ctx) : c
     if (ggml_cpu_repack_is_hijacked()) {
         LLAMA_LOG_INFO("%s: [TURBO] Zero-Allocation Hijacking active. Using pre-mapped weights from SSD.\n", __func__);
     } else {
-        LLAMA_LOG_INFO("%s: Hijacking not active. Checking if we should cache current optimized weights...\n", __func__);
-        
-        // Try to save the current repack if it doesn't exist
-        if (llama_model_repack_save(const_cast<struct llama_model *>(&ctx.get_model()), current_tqr_filename.c_str())) {
-             LLAMA_LOG_INFO("%s: [TURBO] Optimization cached to %s for future instant boots.\n", __func__, current_tqr_filename.c_str());
+        // [TURBO 2.1] Auto-Zero Spike Initialization
+        // If a TQR file exists, hot-swap it immediately before any weights are 'touched'
+        if (access(current_tqr_filename.c_str(), F_OK) == 0) {
+            LLAMA_LOG_INFO("%s: [TURBO] TQR cache found. Performing Zero-Spike weight hot-swap...\n", __func__);
+            if (llama_model_repack_load(const_cast<struct llama_model *>(&ctx.get_model()), current_tqr_filename.c_str())) {
+                LLAMA_LOG_INFO("%s: [TURBO] Weights successfully mapped from SSD. Zero RAM allocation achieved.\n", __func__);
+            }
+        } else {
+            LLAMA_LOG_INFO("%s: TQR cache not found. Generating optimized page-aligned weights for future boots...\n", __func__);
+            if (llama_model_repack_save(const_cast<struct llama_model *>(&ctx.get_model()), current_tqr_filename.c_str())) {
+                 LLAMA_LOG_INFO("%s: [TURBO] Optimization cached to %s. Pulse Sharding 2.5 enabled.\n", __func__, current_tqr_filename.c_str());
+            }
         }
     }
 

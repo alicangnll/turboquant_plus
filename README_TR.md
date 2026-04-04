@@ -2,36 +2,33 @@
 
 > ### [Başlangıç Rehberi](docs/getting-started.md) | [Yapılandırma Önerileri](docs/turboquant-recommendations.md) | [llama.cpp Çatallaması](https://github.com/TheTom/llama-cpp-turboquant)
 
-[TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) (ICLR 2026) algoritmasının gelişmiş bir uygulamasıdır. Yerel LLM çıkarımı (inference) için KV önbelleği (KV cache) sıkıştırmasına odaklanır ve orijinal makalenin ötesinde deneysel bulgular, performans optimizasyonları ve Apple Silicon özelinde iyileştirmeler içerir.
+[TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) (ICLR 2026) algoritması ve **LLMTuning** orkestrasyonunun gelişmiş bir uygulamasıdır. Yerel LLM çıkarımı için KV önbelleği sıkıştırması ile akıllı bellek yönetimini birleştirerek devasa modellerin tüketici donanımlarında çalışmasını sağlar.
 
 ## Projenin Amacı
 
 Bu depo, `llama.cpp` için deneysel bir araştırma ve entegrasyon çalışma alanıdır. Amacımız; farklı donanımlarda karşılaştırılabilir kıyaslama verileri toplamak, KV sıkıştırma yaklaşımlarını doğrulamak ve kararlı hale gelen parçaları kademeli olarak ana `llama.cpp` projesine eklemektir.
 
-## 🚀 2026 Motor Güncellemeleri: Stabilite ve Bellek Yönetimi
+## 🚀 2026 Motor Teknolojileri: Ayrıştırılmış Mükemmeliyet
 
-Yeni nesil TurboQuant+ motoru, Apple Silicon cihazlarda (8GB-24GB RAM) 32B'den 500B'ye kadar olan modellerin sistem kilitlenmeden çalıştırılabilmesi için kritik özellikler sunar:
+TurboQuant+ ve LLMTuning, en verimli çıkarım deneyimini sunmak için birlikte çalışır.
 
-### 1. Bellek Optimizasyon Seviyeleri
-Başlangıçta üç farklı mod seçilebilir:
-- **Performance**: Maksimum GPU kullanımı. 32GB+ RAM sistemler için en hızlı seçenek.
-- **Balanced**: 24GB RAM (M-Pro serisi) için optimize edilmiştir. GPU bütçesinin %30-40'ını kullanır.
-- **Ultra-Eco**: 8-16GB RAM için güvenli mod. Minimal GPU, `turbo2` (2-bit) KV önbelleği ve 512 context limiti. **Aktif Katman Tahliyesi (`madvise`) ve `mlock` kısıtlaması** sayesinde, 8B modeller artık **~1.1GB toplam RAM** ile çalışabiliyor.
+### 🧩 LLMTuning: Akıllı Bellek Orkestrasyonu
+LLMTuning, donanım kaynaklarının aşırı bellek baskısı altında bile stabiliteyi sağlayacak şekilde yönetilmesinden sorumlu "beyin" katmanıdır.
+
+- **Donanım Farkındalıklı NGL Otomasyonu**: Metal `recommendedMaxWorkingSetSize` gibi platform bütçelerini otomatik algılar ve en güvenli `-ngl` katman sayısını hesaplar.
+- **Aktif Parçalama (Active Sharding) & Akıllı MMAP**: Fiziksel RAM'den büyük modeller (100B+) için `madvise` kullanarak işlenen katmanları anında bellekten tahliye eder, NVMe Swap ile sistem kilitlenmeden çalışır.
+- **Ultra-Eco Optimizasyonu**: Mükerrer bellek atamalarını (Repack Suppression) engelleyerek 8B modellerin **~1.1GB toplam RAM** ile çalışabilmesini sağlar.
+- **Performans Modları**: Başlangıçta *Performance* (Maks GPU), *Balanced* (Güvenli VRAM) veya *Ultra-Eco* (Düşük RAM) modları seçilebilir.
 
 
-### 2. Çift İvmelendirme: Metal + OpenMP
-Motor artık Apple Metal (GPU) ve OpenMP (CPU) donanımlarını aynı anda kullanır:
-- **GPU**: Transformer katmanlarını ve KV aritmetiğini işler.
-- **CPU**: Performans Çekirdekleri (P-Cores), arka planda KV sıkıştırma ve Walsh-Hadamard rotasyonları için izole edilir. Bu sayede arayüz takılmaları engellenir ve toplam işlem hızı artar.
+### ⚡ TurboQuant+: Sıkıştırma Çekirdeği
+TurboQuant+, modelin çalışma belleğini küçülten gerçek sıkıştırmayı sağlayan yüksek hızlı motor katmanıdır.
 
-### 3. Hibrit KV Önbelleği (`turbo4` + `turbo2`)
-Key (Anahtar) ve Value (Değer) tensörleri için bağımsız hassasiyet sunar. **K-cache**'in 4-bit (`turbo4`) olarak tutulması modelin zekasını korurken, **V-cache**'in 2-bit (`turbo2`) olarak sıkıştırılması bellek kullanımını dramatik şekilde düşürür.
-
-### 4. Akıllı MMAP ve Aktif Parçalama (Active Sharding)
-Fiziksel RAM'den büyük modeller (100B, 500B) için geliştirilen akıllı bellek eşleme, **Aktif Parçalama** ile birleştirilmiştir. Önyükleyici (prefetcher), katmanlar işlendikten hemen sonra onları RAM'den **tahliye eder** (`madvise`). Bu sayede, model boyutu mevcut RAM'den 10 kat büyük olsa bile sistem **NVMe Swap** kullanarak kilitlenmeden çalışır.
-
-### 5. Yeniden Paketleme Kısıtlaması (`-DGGML_CPU_REPACK=OFF`)
-Başlatma sırasında oluşan mükerrer ağırlık atamalarını önlemek için kritik bir düzeltme uygulanmıştır. "CPU Repack" tamponu devre dışı bırakılarak, 8B modelin soğuk önyükleme (cold-boot) bellek kullanımı 5.4GB'tan **~1.1GB**'a (%79 azalma) düşürülmüştür.
+- **PolarQuant Sıkıştırma**: 2-bit (`turbo2`), 3-bit (`turbo3`) ve 4-bit (`turbo4`) KV önbellek sıkıştırması ile sıfıra yakın kalite kaybı.
+- **Çift İvmelendirme**: Transformer hesaplamaları için **Metal (GPU)**, rotasyon işlemleri için **OpenMP (CPU)** bir arada kullanılır.
+- **Hibrit KV Önbelleği**: K (4-bit) ve V (2-bit) tensörleri için bağımsız hassasiyet sunarak zeka ve tasarruf dengesini kurar.
+- **Sparse V Optimizasyonu**: Düşük ağırlıklı V pozisyonlarını atlayarak, uzun bağlamlarda (long context) okuma hızını **%22.8**'e kadar artırır.
+- **Sınır Koruması (Boundary Protection)**: Bağlam tutarlılığını korumak için ilk/son katmanları yüksek hassasiyette tutar.
 
 
 ### 5. Evrensel Linux Desteği (CUDA & ROCm)
@@ -63,15 +60,12 @@ TurboQuant+ geliştirme sürecinde doğrulanan üç temel bulgu:
 
 32B ve üzeri devasa modelleri Apple Silicon üzerinde çalıştırmak için LLMTuning'in "katman parçalama" stratejisi ile TurboQuant birleştirilmiştir. **3 aşamalı asenkron pipeline** yapısı şöyledir:
 
-### 6. Stabilize Edilen Asenkron Pipeline (`--turbo-async`)
+### 🚀 Stabil Asenkron Pipeline (`--turbo-async`)
 Motor artık gerçek bir 3 aşamalı asenkron orkestrasyon kullanır:
-- **Önyükleme**: GPU çalışırken bir sonraki adımın ağırlıkları diskten RAM'e çekilir (**Cold Boot** minimizasyonu ile).
-- **Hesaplama**: Metal GPU çekirdekleri üzerinde tam hızda çıkarım yapılır.
-- **Sinyalleşme**: KV önbellek bütünlüğünü bozmadan güvenli arka plan yönetimi sağlanır.
-- **Sonuç**: Llama 3.1 8B modelinde **943.7 t/s** gibi rekor prompt hızları ve sıfır metin bozulması (@@@@).
-
-
-Bu yöntemle 32B bir model, sadece **~2-4 GB aktif RAM** ile çalıştırılabilir.
+- **Önyükleme (LLMTuning)**: GPU çalışırken bir sonraki adımın ağırlıkları diskten RAM'e çekilir.
+- **Hesaplama (LLM Engine)**: Metal GPU çekirdekleri üzerinde tam hızda çıkarım yapılır.
+- **Sinyalleşme (TurboQuant)**: KV önbellek bütünlüğünü bozmadan güvenli arka plan yönetimi sağlanır.
+- **Sonuç**: Llama 3.1 8B modelinde **943.7 t/s** gibi rekor prompt hızları.
 
 > [!TIP]
 > Daha fazla mimari detay, bileşen haritası ve veri akış diyagramı için [MAP.md](MAP.md) dosyasına göz atabilirsiniz.

@@ -1,8 +1,6 @@
 #include "llama-repack.h"
 #include "llama-model.h"
 #include "ggml.h"
-#include "ggml-backend.h"
-#include "llama-impl.h"
 #include "llama-llmtuning.h"
 #include <fstream>
 #include <iostream>
@@ -40,7 +38,7 @@ bool llama_model_repack_save(struct llama_model * model, const char * filename) 
     if (!os) return false;
 
     os.write("TQRP", 4);
-    uint32_t version = 1;
+    uint32_t version = 2; // TQR 2.0: Page-Aligned Weights
     os.write((char*)&version, 4);
 
     std::vector<std::pair<std::string, ggml_tensor*>> targets;
@@ -75,9 +73,20 @@ bool llama_model_repack_save(struct llama_model * model, const char * filename) 
         os.write((char*)&placeholder, 8); // Size
     }
 
+    // Align the start of raw data to 16KB (Apple Silicon Page Size)
+    auto align_16kb = [](std::ostream & os) {
+        long pos = os.tellp();
+        long aligned = (pos + 16383) & ~16383;
+        if (aligned > pos) {
+            std::vector<char> padding(aligned - pos, 0);
+            os.write(padding.data(), padding.size());
+        }
+    };
+
     std::vector<uint64_t> offsets;
     std::vector<uint64_t> sizes;
     for (auto & p : targets) {
+        align_16kb(os); // Ensure each tensor starts at a page boundary
         offsets.push_back(os.tellp());
         uint64_t sz = ggml_nbytes(p.second);
         sizes.push_back(sz);
@@ -107,6 +116,14 @@ bool llama_model_repack_load(struct llama_model * model, const char * filename) 
     }
 
     if (memcmp(addr, "TQRP", 4) != 0) {
+        munmap(addr, st.st_size);
+        close(fd);
+        return false;
+    }
+
+    uint32_t version;
+    memcpy(&version, addr + 4, 4);
+    if (version < 1) { // We support 1 and 2
         munmap(addr, st.st_size);
         close(fd);
         return false;
