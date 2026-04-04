@@ -137,16 +137,27 @@ fi
 
 # Advanced Memory Budgeting (NGL Calculation)
 
-estimate_kv() {
-    local c=$1; local l=$2; local h=$3; local d=$4; local t=$5
-    local r=376 # turbo4
-    [[ "$t" == "turbo2" ]] && r=640
-    [[ "$t" == "q8_0" ]] && r=200
-    echo $(( c * l * h * d * 4 * 100 / r / 1024 / 1024 ))
+# Per-tensor compression ratio (×100) for KV MiB estimate — matches LLMTuning policy (turbo* only).
+_turbo_ratio() {
+    case "$1" in
+        turbo2) echo 640 ;;
+        turbo3) echo 490 ;;
+        turbo4|*) echo 376 ;;
+    esac
+}
+
+# K and V tensors each: fp16 bytes c*l*h*d*2, compressed by type-specific ratio.
+estimate_kv_mixed() {
+    local c=$1 l=$2 h=$3 d=$4 tk=$5 tv=$6
+    local rk=$(_turbo_ratio "$tk")
+    local rv=$(_turbo_ratio "$tv")
+    local k_mb=$(( c * l * h * d * 2 * 100 / rk / 1024 / 1024 ))
+    local v_mb=$(( c * l * h * d * 2 * 100 / rv / 1024 / 1024 ))
+    echo $((k_mb + v_mb))
 }
 
 METAL_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) * 75 / 100 / 1024 / 1024 ))
-KV_MB=$(estimate_kv "$CTX" "$LAYERS" "$HEADS" "$DIM" "$CACHE_K")
+KV_MB=$(estimate_kv_mixed "$CTX" "$LAYERS" "$HEADS" "$DIM" "$CACHE_K" "$CACHE_V")
 MODEL_MB=$(( $(stat -f%z "$MODEL_FILE") / 1024 / 1024 ))
 
 # [TURBO 2.1] Dynamic Graph Budget (Scales with model size)
@@ -155,11 +166,10 @@ GRAPH_MB=$(( MODEL_MB / 2 ))
 [[ $GRAPH_MB -gt 5000 ]] && GRAPH_MB=5000
 [[ $GRAPH_MB -lt 100 ]] && GRAPH_MB=100
 
-# 8B + Ultra-Eco: 10%% weight budget + hybrid CPU/Metal with aggressive turbo KV produced garbage tokens.
-# Policy JSON uses q8_0 KV; raise GPU layer budget here (model_choice is known; MEM_BUDGET_PCT was set before model pick).
+# 8B + Ultra-Eco: keep most layers on Metal with TurboQuant KV (policy: turbo4/turbo2).
 if [[ "$mem_choice" == "3" && "$model_choice" == "1" ]]; then
   MEM_BUDGET_PCT=55
-  echo ">>> 8B Ultra-Eco: weight budget ${MEM_BUDGET_PCT}% + q8_0 KV (policy) for stable full-layer Metal offload."
+  echo ">>> 8B Ultra-Eco: weight budget ${MEM_BUDGET_PCT}% (LLMTuning) + TurboQuant KV from policy JSON."
 fi
 
 AVAIL_MB=$(python3 -c "print(int(($METAL_MB - $KV_MB - $GRAPH_MB) * $MEM_BUDGET_PCT / 100))")

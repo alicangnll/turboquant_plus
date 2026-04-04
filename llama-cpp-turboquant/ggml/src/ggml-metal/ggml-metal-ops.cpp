@@ -1656,16 +1656,30 @@ int ggml_metal_op_turbo_wht(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_t enc = ctx->enc;
 
     int direction;
+    int group_size;
     memcpy(&direction, op->op_params, sizeof(int));
+    memcpy(&group_size, op->op_params + sizeof(int), sizeof(int));
 
     const int64_t n_elements = ggml_nelements(op->src[0]);
-    const int64_t n_groups = n_elements / 128;
+    const int32_t head_dim   = (int32_t) op->src[0]->ne[0];
+
+    GGML_ASSERT(group_size == 64 || group_size == 128);
+    GGML_ASSERT(head_dim % group_size == 0);
+    GGML_ASSERT(n_elements % head_dim == 0);
+
+    const int64_t n_groups = n_elements / group_size;
 
     auto pipeline = ggml_metal_library_get_pipeline_turbo_wht(lib);
+
+    const ggml_tensor * scale = op->src[1];
+    const int has_scale = (scale != nullptr && ggml_nelements(scale) > 0) ? 1 : 0;
 
     ggml_metal_kargs_turbo_wht args = {
         /*.n_elements =*/ n_elements,
         /*.direction  =*/ direction,
+        /*.group_size =*/ group_size,
+        /*.head_dim   =*/ head_dim,
+        /*.has_scale  =*/ has_scale,
     };
 
     int ida = 0;
@@ -1673,10 +1687,12 @@ int ggml_metal_op_turbo_wht(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++);
+    // Buffer 3 must always be bound; ignored in shader when has_scale == 0.
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(has_scale ? scale : op->src[0]), ida++);
 
-    // One thread per 128-element group, 256 threads per threadgroup
+    // One thread per WHT group
     const int threads_per_tg = 256;
-    const int n_threadgroups = (n_groups + threads_per_tg - 1) / threads_per_tg;
+    const int n_threadgroups = (int) ((n_groups + threads_per_tg - 1) / threads_per_tg);
     ggml_metal_encoder_dispatch_threadgroups(enc, n_threadgroups, 1, 1, threads_per_tg, 1, 1);
 
     return 1;
@@ -2529,6 +2545,17 @@ bool ggml_metal_op_flash_attn_ext_use_vec(const ggml_tensor * op) {
 
     const int64_t ne00 = op->src[0]->ne[0]; // head size
     const int64_t ne01 = op->src[0]->ne[1]; // batch size
+
+    // Mixed K/V types (e.g. turbo4 K + turbo2 V, q8 K + turbo V): vec FA templates
+    // were validated mainly for symmetric KV; use the non-vec path for correctness.
+    if (op->src[1]->type != op->src[2]->type) {
+        return false;
+    }
+
+    const ggml_type vtype = op->src[2]->type;
+    if (vtype == GGML_TYPE_TURBO2_0 || vtype == GGML_TYPE_TURBO3_0 || vtype == GGML_TYPE_TURBO4_0) {
+        return false;  // prefer non-vec for all-turbo V (symmetric turbo4+4 included)
+    }
 
     // use vec kernel if the batch size is small and if the head size is supported
     // EXPERIMENT: force non-vec for turbo3 on pre-M5 hardware.

@@ -396,10 +396,12 @@ llama_kv_cache::llama_kv_cache(
             ggml_backend_tensor_set(turbo_rotation, TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
             ggml_backend_tensor_set(turbo_rotation_inv, TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
 
-            // Initialize InnerQ scale_inv to all 1.0 (identity scaling)
+            // Initialize InnerQ scale_inv with unitary normalization (1/sqrt(128))
+            // This ensures dot products in rotated domain match natural domain magnitude.
             if (turbo_innerq_scale_inv != nullptr && turbo_innerq_scale_inv->buffer != nullptr) {
                 float ones[INNERQ_MAX_CHANNELS];
-                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = 1.0f;
+                const float scale = 1.0f / sqrtf(128.0f);
+                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = scale;
                 ggml_backend_tensor_set(turbo_innerq_scale_inv, ones, 0, INNERQ_MAX_CHANNELS * sizeof(float));
             }
 
@@ -481,10 +483,11 @@ void llama_kv_cache::clear(bool data) {
             ggml_backend_tensor_set(turbo_rotation, TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
             ggml_backend_tensor_set(turbo_rotation_inv, TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
 
-            // Re-initialize InnerQ scale_inv to all 1.0
+            // Re-initialize InnerQ scale_inv with unitary normalization
             if (turbo_innerq_scale_inv != nullptr && turbo_innerq_scale_inv->buffer != nullptr) {
                 float ones[INNERQ_MAX_CHANNELS];
-                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = 1.0f;
+                const float scale = 1.0f / sqrtf(128.0f);
+                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = scale;
                 ggml_backend_tensor_set(turbo_innerq_scale_inv, ones, 0, INNERQ_MAX_CHANNELS * sizeof(float));
             }
         }

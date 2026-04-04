@@ -874,8 +874,11 @@ typedef struct {
 } ggml_metal_kargs_gated_delta_net;
 
 typedef struct {
-    int64_t  n_elements;  // total elements in tensor
-    int32_t  direction;   // 0 = forward, 1 = inverse
+    int64_t  n_elements;   // product of all dims (contiguous row-major, ne0 fastest)
+    int32_t  direction;    // 0 = forward, 1 = inverse
+    int32_t  group_size;   // 64 or 128, matches ggml_turbo_wht op_params
+    int32_t  head_dim;     // src->ne[0]; groups stride within each head row
+    int32_t  has_scale;    // 1 = buffer(3) is turbo_innerq_scale_inv (F32)
 } ggml_metal_kargs_turbo_wht;
 
 typedef struct {

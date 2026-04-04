@@ -1879,10 +1879,10 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
 
         // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
+        // Group size must follow V head dim / V's turbo layout (asymmetric K/V turbo uses same WHT
+        // on scores but output rows live in V's quantized domain — do not prefer K for grouping).
         if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
-            const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+            const int turbo_group = (v->ne[0] % 128 == 0) ? 128 : 64;
             if (cur->ne[0] % turbo_group == 0) {
                 if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
                 ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
@@ -1952,11 +1952,11 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         // TurboQuant: inverse WHT on attention output (non-FA path)
         if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
-            const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+            const int turbo_group = (v->ne[0] % 128 == 0) ? 128 : 64;
             if (kqv->ne[0] % turbo_group == 0) {
                 if (!ggml_is_contiguous(kqv)) { kqv = ggml_cont(ctx0, kqv); }
+                // TurboQuant logic for non-FA path: Q is always rotated if skip_q_fwd_wht was false.
+                // For non-FA, we don't have the k-nat optimization usually, so assume Q was scaled.
                 ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
                 kqv = ggml_turbo_wht(ctx0, kqv, 1, turbo_group, innerq_scale);
             }
@@ -2149,8 +2149,12 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-        ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size from q->ne[0]
+        // TurboQuant: Queries must be rotated to match Rotated KV cache.
+        // Scaling via innerq_scale is applied during WHT.
+        if (true) {
+            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
+            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size from q->ne[0]
+        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2259,8 +2263,15 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-        ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size
+#if defined(__APPLE__)
+        const bool skip_q_fwd_wht = cparams.flash_attn && k->type == GGML_TYPE_TURBO4_0;
+#else
+        const bool skip_q_fwd_wht = false;
+#endif
+        if (!skip_q_fwd_wht) {
+            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
+            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size
+        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2366,8 +2377,15 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-        ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);
+#if defined(__APPLE__)
+        const bool skip_q_fwd_wht = cparams.flash_attn && k->type == GGML_TYPE_TURBO4_0;
+#else
+        const bool skip_q_fwd_wht = false;
+#endif
+        if (!skip_q_fwd_wht) {
+            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
+            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);
+        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);

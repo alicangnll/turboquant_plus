@@ -66,17 +66,20 @@ estimate_kv_mb() {
     local n_layers="$2"
     local n_heads="$3"
     local head_dim="$4"
-    local cache_type="$5"
+    local cache_k="$5"
+    local cache_v="$6"
 
-    local ratio=376  # turbo4: 3.76x (× 100 for integer math)
-    [ "$cache_type" = "turbo2" ] && ratio=640   # turbo2: 6.4x
-    [ "$cache_type" = "turbo3" ] && ratio=490   # turbo3: 4.9x
-    [ "$cache_type" = "q8_0" ]   && ratio=200   # q8_0: 2x
+    local rk=376 rv=376
+    [ "$cache_k" = "turbo2" ] && rk=640
+    [ "$cache_k" = "turbo3" ] && rk=490
+    [ "$cache_v" = "turbo2" ] && rv=640
+    [ "$cache_v" = "turbo3" ] && rv=490
 
-    # raw = ctx * layers * heads * head_dim * 2 bytes * 2 (K+V) in MB
-    local raw_mb=$(( ctx_len * n_layers * n_heads * head_dim * 4 / 1024 / 1024 ))
-    local compressed_mb=$(( raw_mb * 100 / ratio ))
-    echo "$compressed_mb"
+    # One of K/V in fp16: ctx * layers * heads * head_dim * 2 bytes
+    local half_raw_mb=$(( ctx_len * n_layers * n_heads * head_dim * 2 / 1024 / 1024 ))
+    local k_mb=$(( half_raw_mb * 100 / rk ))
+    local v_mb=$(( half_raw_mb * 100 / rv ))
+    echo $((k_mb + v_mb))
 }
 
 calculate_ngl() {
@@ -85,7 +88,8 @@ calculate_ngl() {
     local n_heads="$3"
     local head_dim="$4"
     local ctx_len="$5"
-    local cache_type="$6"
+    local cache_k="$6"
+    local cache_v="$7"
 
     local gpu_budget_mb
     gpu_budget_mb=$(get_vram_budget_mb)
@@ -102,7 +106,7 @@ calculate_ngl() {
 
     local bytes_per_layer_mb=$(( model_size_mb / total_layers ))
     local kv_mb
-    kv_mb=$(estimate_kv_mb "$ctx_len" "$total_layers" "$n_heads" "$head_dim" "$cache_type")
+    kv_mb=$(estimate_kv_mb "$ctx_len" "$total_layers" "$n_heads" "$head_dim" "$cache_k" "$cache_v")
 
     # On discrete GPUs, we keep more headroom for CUDA graph and system apps
     local graph_overhead_mb=2048
@@ -158,6 +162,7 @@ echo "4) Qwen 2.5 0.5B Instruct (~400 MB)"
 echo "5) Llama-3-405B / 500B Class"
 echo "6) GPT 20B (OpenAI OSS-20B Class - ~12 GB)"
 read -p "Your choice (1/2/3/4/5/6) [Default: 4]: " model_choice
+model_choice=${model_choice:-4}
 
 mkdir -p $ROOT_DIR/models
 
@@ -177,6 +182,11 @@ case "$model_choice" in
     MODEL_URL="https://huggingface.co/mradermacher/c4ai-command-r-plus-08-2024-GGUF/resolve/main/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     MODEL_FILE="$ROOT_DIR/models/c4ai-command-r-plus-08-2024.Q2_K.gguf"
     ;;
+  5|"405B")
+    MODEL_NAME="Llama 3.1 405B"
+    MODEL_URL="https://huggingface.co/mradermacher/Meta-Llama-3.1-405B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
+    MODEL_FILE="$ROOT_DIR/models/Meta-Llama-3.1-405B-Instruct.Q2_K.gguf"
+    ;;
   6|"20B")
     MODEL_NAME="GPT 20B (OSS)"
     MODEL_URL="https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q4_K_M.gguf"
@@ -194,33 +204,47 @@ if [ ! -f "$MODEL_FILE" ]; then
     curl -L -o "$MODEL_FILE" "$MODEL_URL"
 fi
 
-# Part 5: Execution
+# Part 5: LLMTuning policy (same bridge as macOS) + execution
 echo ">>> [4/4] Starting the model with TurboQuant..."
 
-# (Architecture constants for NGL calculation)
-case "$model_choice" in
-  1|"8B")  NUM_LAYERS=32; N_HEADS=32; HEAD_DIM=128; CACHE_TYPE_K="q8_0";  CACHE_TYPE_V="q8_0"; CTX=4096 ;;
-  2|"32B") NUM_LAYERS=64; N_HEADS=40; HEAD_DIM=128; CACHE_TYPE_K="turbo4"; CACHE_TYPE_V="turbo2"; CTX=512 ;;
-  3|"100B")NUM_LAYERS=96; N_HEADS=128; HEAD_DIM=128; CACHE_TYPE_K="turbo4"; CACHE_TYPE_V="turbo2"; CTX=1024 ;;
-  6|"20B") NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64;  CACHE_TYPE_K="turbo4"; CACHE_TYPE_V="turbo4"; CTX=2048; EXTRA_STABLE="-fa on" ;;
-  *)       NUM_LAYERS=24; N_HEADS=8; HEAD_DIM=64;  CACHE_TYPE_K="q8_0";   CACHE_TYPE_V="q8_0";  CTX=2048 ;;
-esac
+export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
+CONFIG_JSON="$ROOT_DIR/tq_cli_config.json"
+echo ">>> Calling LLMTuning Bridge..."
+python3 -m turboquant.cli_config_export --model-choice "$model_choice" --mem-choice "$mem_choice" > "$CONFIG_JSON"
 
-NGL=$(calculate_ngl "$MODEL_FILE" "$NUM_LAYERS" "$N_HEADS" "$HEAD_DIM" "$CTX" "$CACHE_TYPE_K")
+CTX=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['ctx_len'])")
+CACHE_TYPE_K=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['cache_type_k'])")
+CACHE_TYPE_V=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['cache_type_v'])")
+LAYERS=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['num_layers'])")
+HEADS=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['num_heads'])")
+HEAD_DIM=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['head_dim'])")
+TEMPLATE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['chat_template'])")
+EXTRA_POLICY=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON')).get('extra_args', ''))")
+BATCH_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['batch_size'])")
+UBATCH_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_JSON'))['ubatch_size'])")
 
-echo ">>> Calculated NGL: $NGL / $NUM_LAYERS"
-
-# KV cache types are only safe in turbo modes; when we fall back to q8_0 for GPT-OSS-20B,
-# we don't need to give explicit cache-type (llama.cpp uses defaults).
-if [[ "$CACHE_TYPE_K" != "q8_0" || "$CACHE_TYPE_V" != "q8_0" ]]; then
-    CLI_CMD="$CLI_CMD -cnv --cache-type-k \"$CACHE_TYPE_K\" --cache-type-v \"$CACHE_TYPE_V\""
+# 8B + Ultra-Eco: leave headroom for full Metal-style offload (aligned with macOS demo).
+if [[ "$mem_choice" == "3" ]]; then
+  case "$model_choice" in
+    1|8B) MEM_BUDGET_PCT=50 ;;
+  esac
 fi
-CLI_CMD="$CLI_CMD -sys \"$SYSTEM_PROMPT\""
 
-# TurboQuant async pipeline; Sparse-V off by default (Metal: export TURBO_SPARSE_V=1 to opt in)
-CLI_CMD="$CLI_CMD --turbo-async --sparse-v-threshold -1"
+NGL=$(calculate_ngl "$MODEL_FILE" "$LAYERS" "$HEADS" "$HEAD_DIM" "$CTX" "$CACHE_TYPE_K" "$CACHE_TYPE_V")
 
-eval "env TURBO_ASYNC_PIPELINE=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\" -n 300"
+echo ">>> Policy: Cache-K=$CACHE_TYPE_K Cache-V=$CACHE_TYPE_V ctx=$CTX batch=$BATCH_SIZE/$UBATCH_SIZE"
+echo ">>> Calculated NGL: $NGL / $LAYERS"
+
+CLI_CMD="./build/bin/llama-cli -m \"$MODEL_FILE\" -ngl $NGL -t $THREADS -c $CTX -b $BATCH_SIZE --ubatch-size $UBATCH_SIZE $EXTRA_POLICY"
+CLI_CMD="$CLI_CMD --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V --turbo-async --sparse-v-threshold -1"
+
+if [[ "$TEMPLATE" == "none" ]]; then
+    CLI_CMD="$CLI_CMD -p \"Can you explain how we can compress the memory of an artificial intelligence model with a very simple story like a children's fairy tale?\""
+else
+    CLI_CMD="$CLI_CMD -cnv --chat-template \"$TEMPLATE\" -sys \"$SYSTEM_PROMPT\""
+fi
+
+eval "env TURBO_ASYNC_PIPELINE=1 TURBO_LAYER_ADAPTIVE=7 $CLI_CMD -n 300"
 
 echo "-----------------------------------------------"
 echo ">>> Demo completed!"

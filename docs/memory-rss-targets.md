@@ -10,7 +10,7 @@ Bu dosya TurboQuant+ / LLMTuning ile RAM optimizasyonu yaparken **ne ölçülece
 
 ## İkincil metrik: KV tahmini (yönlendirme)
 
-Demo script içindeki `estimate_kv` (turbo4 ≈ 376, turbo2 ≈ 640, q8_0 ≈ 200 oranı) kabaca **KV’nin MiB karşılığını** verir; kesin değer kernel ve hizalamaya bağlıdır.
+Demo script içindeki KV tahmini, LLMTuning politikasindeki `cache_type_k` / `cache_type_v` için **ayrı** sıkıştırma oranlarını kullanır (ör. turbo4 ≈ 376, turbo2 ≈ 640, ×100 tamsayı); K ve V tensörleri fp16 yarım-raw üzerinden toplanır. Kesin MiB kernel ve hizalamaya bağlıdır.
 
 ## “Kayıpsız” — bu projede kabul edilen anlam
 

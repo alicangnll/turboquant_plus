@@ -46,29 +46,41 @@ def get_optimal_config(model_choice, mem_choice):
         "extra_args": ""
     }
 
-    # Model specific architectures (LLMTuning Intelligence)
-    if model_choice in ["1", "8B", "8b"]: # Llama 3.1 8B
-        # Ultra-Eco: very low -ngl + turbo4 KV on hybrid CPU/Metal produced garbage tokens;
-        # use q8_0 KV (still compact vs f16) and let the demo script raise GPU weight budget.
-        if mem_choice == "3":
-            config.update({
-                "num_layers": 32,
-                "num_heads": 32,
-                "head_dim": 128,
-                "ctx_len": 1024,
-                "cache_type_k": "q8_0",
-                "cache_type_v": "q8_0",
-                "extra_args": "-fa on",
-            })
-        else:
-            config.update({
-                "num_layers": 32,
-                "num_heads": 32,
-                "head_dim": 128,
-                "ctx_len": 4096 if mem_choice == "1" else 2048,
-                "cache_type_k": "turbo4",
-                "cache_type_v": "turbo4",
-            })
+    # Model specific architectures (LLMTuning Intelligence).
+    # KV cache: TurboQuant types only (turbo4 / turbo2) — no q8_0 fallback in policy.
+    if model_choice in ["1", "8B", "8b"]:  # Llama 3.1 8B
+        config.update({
+            "num_layers": 32,
+            "num_heads": 32,
+            "head_dim": 128,
+            "ctx_len": 4096 if mem_choice == "1" else (2048 if mem_choice == "2" else 1024),
+            "cache_type_k": "turbo4",
+            "cache_type_v": "turbo2" if mem_choice == "3" else "turbo4",
+            "chat_template": "llama3",
+            "extra_args": "-fa on",
+        })
+
+    elif model_choice in ["4", "0.5B", "0.5b"]:  # Qwen 2.5 0.5B Instruct
+        config.update({
+            "num_layers": 24,
+            "num_heads": 14,
+            "head_dim": 64,
+            "ctx_len": 2048 if mem_choice == "1" else (1024 if mem_choice == "2" else 512),
+            "cache_type_k": "turbo4",
+            "cache_type_v": "turbo2" if mem_choice == "3" else "turbo4",
+            "chat_template": "qwen2",
+        })
+
+    elif model_choice in ["5", "405B", "405b"]:  # Llama 3.1 405B class
+        config.update({
+            "num_layers": 126,
+            "num_heads": 128,
+            "head_dim": 128,
+            "ctx_len": 512 if mem_choice == "1" else (256 if mem_choice == "2" else 128),
+            "cache_type_k": "turbo4",
+            "cache_type_v": "turbo2" if mem_choice == "3" else "turbo4",
+            "chat_template": "llama3",
+        })
 
     elif model_choice in ["2", "32B", "32b"]: # Qwen 2.5 32B
         config.update({
@@ -98,9 +110,10 @@ def get_optimal_config(model_choice, mem_choice):
             "num_heads": 8,
             "head_dim": 64,
             "ctx_len": 2048 if mem_choice == "1" else 1024,
-            "cache_type_k": "turbo4", 
+            "cache_type_k": "turbo4",
             "cache_type_v": "turbo4",
-            "chat_template": "none"
+            "chat_template": "none",
+            "extra_args": "-fa on",
         })
 
     elif model_choice in ["7", "31B", "31b"]: # Gemma 4 31B
@@ -115,18 +128,43 @@ def get_optimal_config(model_choice, mem_choice):
             "extra_args": "-fa on"
         })
 
-    out = _apply_mem_tier(config, mem_choice)
-    if model_choice in ["1", "8B", "8b"] and mem_choice == "3":
-        out["lossless_definition"] = (
-            "8B Ultra-Eco: q8_0 KV + higher GPU layer budget; avoids garbled hybrid turbo4/low-NGL path"
-        )
-    return out
+    return _apply_mem_tier(config, mem_choice)
+
+
+def _emit_bat_env(config):
+    """Windows cmd.exe: SET lines for run_turboquant_demo.bat (quoted values)."""
+
+    def esc(s):
+        return str(s).replace('"', '""')
+
+    pairs = [
+        ("CTX", config["ctx_len"]),
+        ("CACHE_TYPE_K", config["cache_type_k"]),
+        ("CACHE_TYPE_V", config["cache_type_v"]),
+        ("BATCH_SIZE", config["batch_size"]),
+        ("UBATCH_SIZE", config["ubatch_size"]),
+        ("NUM_LAYERS", config["num_layers"]),
+        ("CHAT_TEMPLATE", config.get("chat_template") or ""),
+        ("EXTRA_POLICY", (config.get("extra_args") or "").strip()),
+    ]
+    for name, val in pairs:
+        print(f'set "{name}={esc(val)}"')
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-choice", required=True)
     parser.add_argument("--mem-choice", required=True)
+    parser.add_argument(
+        "--emit",
+        choices=["json", "bat"],
+        default="json",
+        help="json: full policy to stdout; bat: SET lines for Windows demo",
+    )
     args = parser.parse_args()
 
     config = get_optimal_config(args.model_choice, args.mem_choice)
-    print(json.dumps(config))
+    if args.emit == "bat":
+        _emit_bat_env(config)
+    else:
+        print(json.dumps(config))
