@@ -92,7 +92,8 @@ if [ -z "$model_choice" ]; then
 fi
 
 # Use LLMTuning Policy Bridge (Python)
-CONFIG_JSON="$ROOT_DIR/tq_cli_config_${model_choice}_${mem_choice}.json"
+# Single policy file — always overwritten (no per model/mem pair files).
+CONFIG_JSON="$ROOT_DIR/tq_cli_config.json"
 echo ">>> Calling LLMTuning Bridge..."
 if python3 -m turboquant.cli_config_export --model-choice "$model_choice" --mem-choice "$mem_choice" > "$CONFIG_JSON"; then
     echo ">>> LLMTuning: Policy exported."

@@ -32,7 +32,7 @@ Demo script içindeki `estimate_kv` (turbo4 ≈ 376, turbo2 ≈ 640, q8_0 ≈ 20
 | 2 | Balanced | Orta RSS (~24 GB sınıfı hedef) | 256 / 128 |
 | 3 | Ultra-Eco | Peak RSS’i düşük tut (16 GB sınıfı) | 32 / 32 |
 
-`run_turboquant_demo_macos.sh` bu değerleri `tq_cli_config_*.json` içinden okur.
+`run_turboquant_demo_macos.sh` bu değerleri `tq_cli_config.json` dosyasına yazar ve oradan okur (her çalıştırmada güncellenir).
 
 ## Ölçüm prosedürü
 
