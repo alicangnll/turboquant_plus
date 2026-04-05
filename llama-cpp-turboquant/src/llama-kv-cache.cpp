@@ -26,7 +26,6 @@ extern float g_innerq_scale_inv_host[INNERQ_MAX_CHANNELS];
 extern bool turbo_innerq_needs_tensor_update(void);
 extern void turbo_innerq_mark_tensor_updated(void);
 #else
-static bool  g_innerq_finalized = false;
 static float g_innerq_scale_inv_host[INNERQ_MAX_CHANNELS] = {};
 static bool turbo_innerq_needs_tensor_update(void) { return false; }
 static void turbo_innerq_mark_tensor_updated(void) {}
@@ -396,12 +395,11 @@ llama_kv_cache::llama_kv_cache(
             ggml_backend_tensor_set(turbo_rotation, TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
             ggml_backend_tensor_set(turbo_rotation_inv, TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
 
-            // Initialize InnerQ scale_inv with unitary normalization (1/sqrt(128))
-            // This ensures dot products in rotated domain match natural domain magnitude.
+            // Initialize InnerQ scale_inv to all 1.0 (identity scaling)
+            // Note: dequantization kernels now handle their own normalization.
             if (turbo_innerq_scale_inv != nullptr && turbo_innerq_scale_inv->buffer != nullptr) {
                 float ones[INNERQ_MAX_CHANNELS];
-                const float scale = 1.0f / sqrtf(128.0f);
-                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = scale;
+                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = 1.0f;
                 ggml_backend_tensor_set(turbo_innerq_scale_inv, ones, 0, INNERQ_MAX_CHANNELS * sizeof(float));
             }
 
@@ -483,11 +481,10 @@ void llama_kv_cache::clear(bool data) {
             ggml_backend_tensor_set(turbo_rotation, TURBO_ROTATION_R, 0, 128 * 128 * sizeof(float));
             ggml_backend_tensor_set(turbo_rotation_inv, TURBO_ROTATION_RT, 0, 128 * 128 * sizeof(float));
 
-            // Re-initialize InnerQ scale_inv with unitary normalization
+            // Re-initialize InnerQ scale_inv to all 1.0
             if (turbo_innerq_scale_inv != nullptr && turbo_innerq_scale_inv->buffer != nullptr) {
                 float ones[INNERQ_MAX_CHANNELS];
-                const float scale = 1.0f / sqrtf(128.0f);
-                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = scale;
+                for (int i = 0; i < INNERQ_MAX_CHANNELS; i++) ones[i] = 1.0f;
                 ggml_backend_tensor_set(turbo_innerq_scale_inv, ones, 0, INNERQ_MAX_CHANNELS * sizeof(float));
             }
         }
@@ -1461,13 +1458,8 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
             v = ggml_reshape_2d(ctx, v, n_embd_gqa, kv_size*n_stream);
         }
 
-        ggml_tensor * result = ggml_set_rows(ctx, v, v_cur, v_idxs);
-        // With zero-padding, all groups are always full 128-element WHT groups
-        if (v_is_turbo) {
-            int32_t wht_group = 128;  // always 128 with padding
-            memcpy(result->op_params, &wht_group, sizeof(int32_t));
-        }
-        return result;
+    ggml_tensor * result = ggml_set_rows(ctx, v, v_cur, v_idxs);
+    return result;
     }
 
     if (ggml_row_size(v_cur->type, n_embd_gqa) == v_cur->nb[2]) {

@@ -352,6 +352,48 @@ void quantize_iq4_nl(device const float * src, device block_iq4_nl & dst) {
 // TurboQuant Fast Walsh-Hadamard rotation for Metal
 // Replaces 256KB dense matrices with 512 bytes of sign arrays + O(d log d) butterfly
 // Generated with seed=42 (rotation) and seed=1042 (QJL)
+// --- TurboQuant LUTs ---
+constant float turbo_centroids_2bit[4] = { -0.133462f, -0.039994f, 0.039994f, 0.133462f };
+constant half  turbo_centroids_2bit_h[4] = { -0.133462h, -0.039994h, 0.039994h, 0.133462h };
+constant float turbo_centroids_3bit[8] = {
+    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
+     0.021460f,  0.065717f,  0.117832f,  0.190685f
+};
+constant half  turbo_centroids_3bit_h[8] = {
+    -0.190685h, -0.117832h, -0.065717h, -0.021460h,
+     0.021460h,  0.065717h,  0.117832h,  0.190685h
+};
+constant float turbo_centroids_4bit[16] = {
+    -0.173926f, -0.117195f, -0.089527f, -0.068756f,
+    -0.051262f, -0.035597f, -0.020989f, -0.006938f,
+     0.006938f,  0.020989f,  0.035597f,  0.051262f,
+     0.068756f,  0.089527f,  0.117195f,  0.173926f
+};
+constant half  turbo_centroids_4bit_h[16] = {
+    -0.173926h, -0.117195h, -0.089527h, -0.068756h,
+    -0.051262h, -0.035597h, -0.020989h, -0.006938h,
+     0.006938h,  0.020989h,  0.035597h,  0.051262h,
+     0.068756h,  0.089527h,  0.117195h,  0.173926h
+};
+
+// --- Midpoints for nearest-centroid lookup during quantization ---
+constant float turbo_mid_2bit[3] = { -0.086728f, 0.0f, 0.086728f };
+constant float turbo_mid_3bit[7] = { 
+    -0.154259f, -0.091775f, -0.043589f, 0.0f, 0.043589f, 0.091775f, 0.154259f 
+};
+constant float turbo_mid_4bit[15] = {
+    -0.145560f, -0.103361f, -0.079142f, -0.060009f,
+    -0.043430f, -0.028293f, -0.013963f,  0.000000f,
+     0.013963f,  0.028293f,  0.043430f,  0.060009f,
+     0.079142f,  0.103361f,  0.145560f
+};
+constant half turbo_mag_3bit_h[4] = {
+    0.021460h, 0.065717h, 0.117832h, 0.190685h
+};
+constant half2 turbo_mag_pairs_h[2] = {
+    half2(0.021460h, 0.065717h),   // pair 0: mag indices 0,1
+    half2(0.117832h, 0.190685h),   // pair 1: mag indices 2,3
+};
 
 // --- Rotation sign arrays ---
 constant float turbo_wht_signs1[128] = {
@@ -416,79 +458,30 @@ static void turbo_fwht_128(thread float * x) {
             }
         }
     }
-    // Normalize by 1/sqrt(128)
-    const float inv_sqrt_128 = 0.08838834764831845f; // 1/sqrt(128)
-    for (int i = 0; i < 128; i++) {
-        x[i] *= inv_sqrt_128;
-    }
 }
 
 // --- Forward rotation: signs1 → FWHT → signs2 ---
 static void turbo_rotate_forward(thread float * x, constant float * s1, constant float * s2) {
+    const float inv_sqrt = 0.088388347f; // 1/sqrt(128)
     for (int i = 0; i < 128; i++) x[i] *= s1[i];
     turbo_fwht_128(x);
-    for (int i = 0; i < 128; i++) x[i] *= s2[i];
+    for (int i = 0; i < 128; i++) x[i] *= s2[i] * inv_sqrt;
 }
 
-// --- Inverse rotation: signs2 → FWHT → signs1 (FWHT is its own inverse) ---
 static void turbo_rotate_inverse(thread float * x, constant float * s1, constant float * s2) {
+    const float inv_sqrt = 0.088388347f; // 1/sqrt(128)
     for (int i = 0; i < 128; i++) x[i] *= s2[i];
     turbo_fwht_128(x);
-    for (int i = 0; i < 128; i++) x[i] *= s1[i];
+    for (int i = 0; i < 128; i++) x[i] *= s1[i] * inv_sqrt;
 }
 
 // ===== END turbo-wht.h =====
 
-// 2-bit centroids for d=128 (scaled by 1/sqrt(128))
-constant float turbo_centroids_2bit[4] = { -0.133462f, -0.039994f, 0.039994f, 0.133462f };
-// 3-bit centroids for d=128
-constant float turbo_centroids_3bit[8] = {
-    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
-     0.021460f,  0.065717f,  0.117832f,  0.190685f
-};
-// Midpoints for 2-bit nearest centroid lookup
-constant float turbo_mid_2bit[3] = { -0.086728f, 0.0f, 0.086728f };
-// Midpoints for 3-bit
-constant float turbo_mid_3bit[7] = { -0.154259f, -0.091775f, -0.043589f, 0.0f, 0.043589f, 0.091775f, 0.154259f };
 
-// 4-bit PolarQuant centroids (16 levels) — optimal for N(0, 1/sqrt(128))
-constant float turbo_centroids_4bit[16] = {
-    -0.173926f, -0.117195f, -0.089527f, -0.068756f,
-    -0.051262f, -0.035597f, -0.020989f, -0.006938f,
-     0.006938f,  0.020989f,  0.035597f,  0.051262f,
-     0.068756f,  0.089527f,  0.117195f,  0.173926f
-};
-constant float turbo_mid_4bit[15] = {
-    -0.145560f, -0.103361f, -0.079142f, -0.060009f,
-    -0.043430f, -0.028293f, -0.013963f,  0.000000f,
-     0.013963f,  0.028293f,  0.043430f,  0.060009f,
-     0.079142f,  0.103361f,  0.145560f
-};
+// ----- iq1_s dequantize -----
 
-// Half-precision 4-bit centroid LUT for vec path
-constant half turbo_centroids_4bit_h[16] = {
-    -0.173926h, -0.117195h, -0.089527h, -0.068756h,
-    -0.051262h, -0.035597h, -0.020989h, -0.006938h,
-     0.006938h,  0.020989h,  0.035597h,  0.051262h,
-     0.068756h,  0.089527h,  0.117195h,  0.173926h
-};
 
-// 8-entry magnitude LUT for 4-bit (positive half, ascending)
-// idx 8-15 are positive: mag = centroids_4bit[idx]
-// idx 0-7 are negative: mag = centroids_4bit[15 - idx] with sign flip
-// sign = (idx >> 3) ? +1 : -1
-// mag_idx = (idx & 7) for positive, (7 - (idx & 7)) for negative — but
-// since centroids are symmetric ascending, just use: mag[idx & 7] for idx>=8,
-// mag[7 - (idx & 7)] for idx<8. Simpler: mag[idx >= 8 ? idx & 7 : 7 - (idx & 7)]
-constant half turbo_mag_4bit_h[8] = {
-    0.006938h, 0.020989h, 0.035597h, 0.051262h,
-    0.068756h, 0.089527h, 0.117195h, 0.173926h
-};
-
-// Half-precision 2-bit centroid LUT for vec path
-constant half turbo_centroids_2bit_h[4] = {
-    -0.133462h, -0.039994h, 0.039994h, 0.133462h
-};
+// ----- quantize -----
 
 // Quantize 32 elements into one block_turbo2_0 (NO rotation — rotation happens
 // at the 128-element group level in kernel_set_rows_turbo)
@@ -550,21 +543,17 @@ void quantize_turbo3_0(device const float * src, device block_turbo3_0 & dst) {
 
 void quantize_turbo4_0(device const float * src, device block_turbo4_0 & dst) {
 #pragma METAL fp math_mode(safe)
-    // 4-bit PolarQuant: normalize → rotate → quantize to 16 centroids → nibble pack
+    // 4-bit PolarQuant (Natural Space): normalize → quantize to 16 centroids → nibble pack
     float norm_sq = 0.0f;
     for (int j = 0; j < 128; j++) norm_sq += src[j] * src[j];
     float grp_norm = sqrt(norm_sq);
     float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
 
-    float x[128];
-    for (int j = 0; j < 128; j++) x[j] = src[j] * inv_norm;
-    turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
-
     for (int j = 0; j < QK_TURBO4 / 2; j++) dst.qs[j] = 0;
 
     float recon_norm_sq = 0.0f;
     for (int j = 0; j < 128; j++) {
-        float val = x[j];
+        float val = src[j] * inv_norm;
         uint8_t idx;
         if      (val < turbo_mid_4bit[ 0]) idx = 0;
         else if (val < turbo_mid_4bit[ 1]) idx = 1;
@@ -591,6 +580,7 @@ void quantize_turbo4_0(device const float * src, device block_turbo4_0 & dst) {
     float recon_norm = sqrt(recon_norm_sq);
     dst.norm = half((recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm);
 }
+
 
 // ----- turbo3 dequantize with per-thread block cache -----
 // The rotation requires all 128 elements. Flash attention calls dequantize
@@ -628,11 +618,6 @@ static void turbo_fwht_128_half4(thread half4 * v) {
             }
         }
     }
-    // Normalize
-    const half4 inv_sqrt_128 = half4(0.08838834764831845h);
-    for (int i = 0; i < 32; i++) {
-        v[i] *= inv_sqrt_128;
-    }
 }
 
 // ----- turbo2 dequantize -----
@@ -642,35 +627,37 @@ static void turbo_fwht_128_half4(thread half4 * v) {
 // Non-vec: 16 elements per call (il ∈ {0,1}), returns type4x4
 template <typename type4x4>
 void dequantize_turbo2_0(device const block_turbo2_0 * xb, short il, thread type4x4 & reg) {
-    const float norm = float(xb->norm);
-    // il=0 → elements 0-15 (qs bytes 0-3)
-    // il=1 → elements 16-31 (qs bytes 4-7)
-    const int qs_off = il * 4;
-    float4x4 reg_f;
+    const float norm_b = float(xb->norm);
+    const int off = il * 16;
+    float4x4 res;
     for (int g = 0; g < 4; g++) {
-        const uint8_t qb = xb->qs[qs_off + g];
-        reg_f[g] = float4(
-            turbo_centroids_2bit[(qb      ) & 0x03] * norm,
-            turbo_centroids_2bit[(qb >> 2) & 0x03] * norm,
-            turbo_centroids_2bit[(qb >> 4) & 0x03] * norm,
-            turbo_centroids_2bit[(qb >> 6)       ] * norm
-        );
+        const int goff = off + g * 4;
+        const uint8_t qb = xb->qs[goff / 4];
+        res[g] = float4(
+            float(turbo_centroids_2bit_h[(qb      ) & 0x03]),
+            float(turbo_centroids_2bit_h[(qb >> 2) & 0x03]),
+            float(turbo_centroids_2bit_h[(qb >> 4) & 0x03]),
+            float(turbo_centroids_2bit_h[(qb >> 6)       ])
+        ) * norm_b;
     }
-    reg = (type4x4) reg_f;
+    reg = (type4x4) res;
 }
 
 // Vec: 4 elements per call (il ∈ {0..7}), returns type4
 template <typename type4>
 void dequantize_turbo2_0_t4(device const block_turbo2_0 * xb, short il, thread type4 & reg) {
-    const float norm = float(xb->norm);
-    // il selects which byte of qs (each byte has 4 x 2-bit values)
-    const uint8_t qb = xb->qs[il];
-    reg = type4(float4(
-        float(turbo_centroids_2bit_h[(qb      ) & 0x03]) * norm,
-        float(turbo_centroids_2bit_h[(qb >> 2) & 0x03]) * norm,
-        float(turbo_centroids_2bit_h[(qb >> 4) & 0x03]) * norm,
-        float(turbo_centroids_2bit_h[(qb >> 6)       ]) * norm
-    ));
+    const float norm_b = float(xb->norm);
+    const int off = il * 4;
+    const uint8_t qb0 = xb->qs[off / 4];
+    const uint8_t qb1 = (off + 3 < 32) ? xb->qs[(off + 3) / 4] : 0; // Guard for 32nd el
+    
+    // Simplest possible centroid-only dequant (Natural Space)
+    reg = type4(
+        float(turbo_centroids_2bit_h[(xb->qs[off/4] >> ((off%4)*2)) & 0x03]),
+        float(turbo_centroids_2bit_h[(xb->qs[(off+1)/4] >> (((off+1)%4)*2)) & 0x03]),
+        float(turbo_centroids_2bit_h[(xb->qs[(off+2)/4] >> (((off+2)%4)*2)) & 0x03]),
+        float(turbo_centroids_2bit_h[(xb->qs[(off+3)/4] >> (((off+3)%4)*2)) & 0x03])
+    ) * norm_b;
 }
 
 // Block-32 dequant: no WHT needed (graph handles rotation). Just centroid lookup + norm scale.
@@ -681,149 +668,42 @@ void dequantize_turbo2_0_t4(device const block_turbo2_0 * xb, short il, thread t
 // Non-vec: 16 elements per call (il ∈ {0,1}), returns type4x4
 template <typename type4x4>
 void dequantize_turbo3_0(device const block_turbo3_0 * xb, short il, thread type4x4 & reg) {
-    const float norm = float(xb->norm);
-    // il=0 → elements 0-15 (qs bytes 0-3, signs bytes 0-1)
-    // il=1 → elements 16-31 (qs bytes 4-7, signs bytes 2-3)
-    const int qs_off = il * 4;
-    float4x4 reg_f;
+    const float norm_b = float(xb->norm);
+    const int off = il * 16;
+    float4x4 res;
     for (int g = 0; g < 4; g++) {
-        // g iterates over 4 groups of 4 elements within our 16
-        // element index within block: il*16 + g*4 + k, k=0..3
-        const uint8_t qb = xb->qs[qs_off + g];
-        // signs byte index: (il*16 + g*4) / 8 = il*2 + g/2
-        const uint8_t sb = xb->signs[il * 2 + g / 2];
-        const int sshift = (g & 1) * 4;
-
-        reg_f[g] = float4(
-            turbo_centroids_3bit[(qb & 0x03)        | (((sb >> (sshift + 0)) & 1) << 2)] * norm,
-            turbo_centroids_3bit[((qb >> 2) & 0x03) | (((sb >> (sshift + 1)) & 1) << 2)] * norm,
-            turbo_centroids_3bit[((qb >> 4) & 0x03) | (((sb >> (sshift + 2)) & 1) << 2)] * norm,
-            turbo_centroids_3bit[((qb >> 6) & 0x03) | (((sb >> (sshift + 3)) & 1) << 2)] * norm
-        );
+        const int j = off + g * 4;
+        const uint8_t q0 = (xb->qs[j/4] >> ((j%4)*2)) & 0x3;
+        const uint8_t s0 = (xb->signs[j/8] >> (j%8)) & 1;
+        const uint8_t q1 = (xb->qs[(j+1)/4] >> (((j+1)%4)*2)) & 0x3;
+        const uint8_t s1 = (xb->signs[(j+1)/8] >> ((j+1)%8)) & 1;
+        const uint8_t q2 = (xb->qs[(j+2)/4] >> (((j+2)%4)*2)) & 0x3;
+        const uint8_t s2 = (xb->signs[(j+2)/8] >> ((j+2)%8)) & 1;
+        const uint8_t q3 = (xb->qs[(j+3)/4] >> (((j+3)%4)*2)) & 0x3;
+        const uint8_t s3 = (xb->signs[(j+3)/8] >> ((j+3)%8)) & 1;
+        res[g] = float4(
+            float(turbo_centroids_3bit_h[q0 | (s0 << 2)]),
+            float(turbo_centroids_3bit_h[q1 | (s1 << 2)]),
+            float(turbo_centroids_3bit_h[q2 | (s2 << 2)]),
+            float(turbo_centroids_3bit_h[q3 | (s3 << 2)])
+        ) * norm_b;
     }
-    reg = (type4x4) reg_f;
+    reg = (type4x4) res;
 }
 
-// Half-precision centroid LUT for vec path — reduces constant cache pressure at long context.
-// Register LUT (cn[8] = centroid*norm in thread registers) was tested but caused register
-// spill on Metal, making it slower. Constant half LUT + float norm broadcast remains the
-// fastest approach on Apple Silicon. On CUDA, register LUT works better (see @spiritbuun).
-constant half turbo_centroids_3bit_h[8] = {
-    -0.190685h, -0.117832h, -0.065717h, -0.021460h,
-     0.021460h,  0.065717h,  0.117832h,  0.190685h
-};
-
-// 4-entry magnitude LUT (positive values only, ascending order)
-// Used with ALU sign application to halve constant cache divergence
-constant half turbo_mag_3bit_h[4] = {
-    0.021460h, 0.065717h, 0.117832h, 0.190685h
-};
-
-// 2-entry PAIR LUT: each entry is a half2 containing two adjacent magnitudes.
-// Only 2 possible constant addresses per lookup (vs 4 for mag LUT, 8 for full).
-// bit1 selects the pair, bit0 selects within the pair via ternary.
-constant half2 turbo_mag_pairs_h[2] = {
-    half2(0.021460h, 0.065717h),   // pair 0: mag indices 0,1
-    half2(0.117832h, 0.190685h),   // pair 1: mag indices 2,3
-};
-
 // Vec: 4 elements per call (il ∈ {0..7}), returns type4
-// Experiment: batched byte reads (ported from @spiritbuun's CUDA impl).
-// Read qs + signs bytes with minimal device memory accesses.
-// The signs byte covers 8 elements — read once, shift for each element.
-// Constant half[8] LUT for centroid lookup (proven fastest on Apple Silicon).
 template <typename type4>
 void dequantize_turbo3_0_t4(device const block_turbo3_0 * xb, short il, thread type4 & reg) {
-    // PROFILING MODE: controlled by TURBO_PROFILE_MODE compile flag
-    // 0 = full dequant (batched extract)
-    // 1 = no-op (return zeros) — decode ceiling without dequant cost
-    // 2 = norm only (read norm, return constant) — isolate norm read
-    // 3 = norm + qs only (skip signs) — isolate signs byte cost
-    // 4 = full dequant, skip LUT (use constant centroid) — isolate LUT cost
-#ifndef TURBO_PROFILE_MODE
-#define TURBO_PROFILE_MODE 0
-#endif
-
-#if TURBO_PROFILE_MODE == 1
-    // NO-OP: decode speed ceiling
-    reg = type4(0.0f);
-#elif TURBO_PROFILE_MODE == 2
-    // NORM ONLY: just read norm, return it as all 4 values
-    const float norm = float(xb->norm);
-    reg = type4(norm);
-#elif TURBO_PROFILE_MODE == 3
-    // NORM + QS: read norm and qs byte, skip signs
-    const float norm = float(xb->norm);
-    const uint8_t qb = xb->qs[il];
-    const uint8_t q0 = (qb      ) & 0x03;
-    const uint8_t q1 = (qb >> 2) & 0x03;
-    const uint8_t q2 = (qb >> 4) & 0x03;
-    const uint8_t q3 = (qb >> 6);
-    // Use qs without signs — just positive centroids
-    reg = type4(float4(
-        float(turbo_centroids_3bit_h[q0 + 4]),
-        float(turbo_centroids_3bit_h[q1 + 4]),
-        float(turbo_centroids_3bit_h[q2 + 4]),
-        float(turbo_centroids_3bit_h[q3 + 4])
-    ) * norm);
-#elif TURBO_PROFILE_MODE == 4
-    // SKIP LUT: read all bytes but use constant centroid value
-    const float norm = float(xb->norm);
-    const uint8_t qb = xb->qs[il];
-    const uint8_t sb = xb->signs[il >> 1];
-    // Pretend all elements are centroid 0 — isolates LUT indexing cost
-    reg = type4(float4(float(turbo_centroids_3bit_h[0])) * norm);
-#else
-    // MODE 0: 4-entry magnitude LUT + ALU sign (halves constant cache divergence)
-    // Only 4 possible constant addresses per lookup (vs 8 in full LUT).
-    // Sign applied via select() — no branch, just conditional negate.
-    // Correct sign mapping: sign=1 → +mag[qs], sign=0 → -mag[3-qs] (reversed)
-    const float norm = float(xb->norm);
-    const uint8_t qb = xb->qs[il];
-    const uint8_t sb = xb->signs[il >> 1];
-    const int sshift = (il & 1) << 2;
-
-    const uint8_t q0 = (qb      ) & 0x03;
-    const uint8_t q1 = (qb >> 2) & 0x03;
-    const uint8_t q2 = (qb >> 4) & 0x03;
-    const uint8_t q3 = (qb >> 6);
-    const uint8_t s0 = (sb >> (sshift    )) & 1;
-    const uint8_t s1 = (sb >> (sshift + 1)) & 1;
-    const uint8_t s2 = (sb >> (sshift + 2)) & 1;
-    const uint8_t s3 = (sb >> (sshift + 3)) & 1;
-
-    // Auto-selected dequant path based on hardware.
-    // TURBO_USE_4MAG=1 (pre-M5): 4-entry magnitude LUT + XOR sign (+38-45% on M2)
-    // TURBO_USE_4MAG=0 (M5+): 8-entry full LUT (best on M5, 0.905x q8_0)
-#if TURBO_USE_4MAG
-    // 4-mag LUT (proven +38-45% on M2). See decode-speed-hardware-analysis.md
-    // for the full 12-approach experiment log.
-    const uint8_t mi0 = q0 ^ (s0 ? 0u : 0x3u);
-    const uint8_t mi1 = q1 ^ (s1 ? 0u : 0x3u);
-    const uint8_t mi2 = q2 ^ (s2 ? 0u : 0x3u);
-    const uint8_t mi3 = q3 ^ (s3 ? 0u : 0x3u);
-
-    const float v0 = float(turbo_mag_3bit_h[mi0]) * norm;
-    const float v1 = float(turbo_mag_3bit_h[mi1]) * norm;
-    const float v2 = float(turbo_mag_3bit_h[mi2]) * norm;
-    const float v3 = float(turbo_mag_3bit_h[mi3]) * norm;
-
-    reg = type4(float4(
-        s0 ? v0 : -v0,
-        s1 ? v1 : -v1,
-        s2 ? v2 : -v2,
-        s3 ? v3 : -v3
-    ));
-#else
-    // 8-entry full LUT: best on M5 Max (0.905x q8_0, 77.4 tok/s)
-    reg = type4(float4(
-        float(turbo_centroids_3bit_h[q0 | (s0 << 2)]),
-        float(turbo_centroids_3bit_h[q1 | (s1 << 2)]),
-        float(turbo_centroids_3bit_h[q2 | (s2 << 2)]),
-        float(turbo_centroids_3bit_h[q3 | (s3 << 2)])
-    ) * norm);
-#endif
-#endif
+    const float norm_b = float(xb->norm);
+    const int off = il * 4;
+    float4 res;
+    for (int i = 0; i < 4; i++) {
+        const int j = off + i;
+        const uint8_t q0 = (xb->qs[j/4] >> ((j%4)*2)) & 0x3;
+        const uint8_t s0 = (xb->signs[j/8] >> (j%8)) & 0x1;
+        res[i] = float(turbo_centroids_3bit_h[q0 | (s0 << 2)]);
+    }
+    reg = type4(res * norm_b);
 }
 
 // ----- turbo4 dequantize with per-thread block cache -----
@@ -840,112 +720,47 @@ static void turbo4_dequantize_full_block(device const block_turbo4_0 * xb, threa
 
 template <typename type4x4>
 void dequantize_turbo4_0(device const block_turbo4_0 * xb, short il, thread type4x4 & reg) {
-    const half norm = xb->norm;
-    
-    // Vectorized 4-bit dequant with inverse rotation
-    thread half4 v[32];
-    for (int i = 0; i < 32; i++) {
-        // Each half4 = 4 elements = 2 bytes of qs
-        const uint8_t qb0 = xb->qs[i * 2];
-        const uint8_t qb1 = xb->qs[i * 2 + 1];
-        v[i] = half4(
-            turbo_centroids_4bit_h[(qb0     ) & 0xF],
-            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
-            turbo_centroids_4bit_h[(qb1     ) & 0xF],
-            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
+    const float norm = float(xb->norm);
+    const int off = il * 16;
+    float4x4 res;
+    for (int g = 0; g < 4; g++) {
+        const int goff = off + g * 4;
+        const uint8_t qb0 = xb->qs[goff / 2];
+        const uint8_t qb1 = xb->qs[(goff + 2) / 2];
+        res[g] = float4(
+            float(turbo_centroids_4bit_h[(qb0     ) & 0xF]),
+            float(turbo_centroids_4bit_h[(qb0 >> 4) & 0xF]),
+            float(turbo_centroids_4bit_h[(qb1     ) & 0xF]),
+            float(turbo_centroids_4bit_h[(qb1 >> 4) & 0xF])
         ) * norm;
     }
-
-    // Rotated-domain K/V in FA: inverse applied once on attention output (graph).
-    // Emergency Stability: Temporarily bypass rotation to end hallucinations
-    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
-    // turbo_fwht_128_half4(v);
-    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
-
-    // Extract 16 elements (il * 16) -> 4 half4 vectors
-    const int v_base = il * 4;
-    float4x4 reg_f;
-    for (int g = 0; g < 4; g++) {
-        reg_f[g] = float4(v[v_base + g]);
-    }
-    reg = (type4x4) reg_f;
+    reg = (type4x4) res;
 }
 
 template <typename type4>
 void dequantize_turbo4_0_t4(device const block_turbo4_0 * xb, short il, thread type4 & reg) {
-    const half norm = xb->norm;
-    
-    thread half4 v[32];
-    for (int i = 0; i < 32; i++) {
-        const uint8_t qb0 = xb->qs[i * 2];
-        const uint8_t qb1 = xb->qs[i * 2 + 1];
-        v[i] = half4(
-            turbo_centroids_4bit_h[(qb0     ) & 0xF],
-            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
-            turbo_centroids_4bit_h[(qb1     ) & 0xF],
-            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
-        ) * norm;
-    }
-
-    // Emergency Stability: Temporarily bypass rotation to end hallucinations
-    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
-    // turbo_fwht_128_half4(v);
-    // for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
-
-    reg = type4(float4(v[il]));
+    const float norm = float(xb->norm);
+    const int off = il * 4;
+    const uint8_t qb0 = xb->qs[off / 2];
+    const uint8_t qb1 = xb->qs[(off + 2) / 2];
+    reg = type4(
+        float(turbo_centroids_4bit_h[(qb0     ) & 0xF]),
+        float(turbo_centroids_4bit_h[(qb0 >> 4) & 0xF]),
+        float(turbo_centroids_4bit_h[(qb1     ) & 0xF]),
+        float(turbo_centroids_4bit_h[(qb1 >> 4) & 0xF])
+    ) * norm;
 }
 
 // K slot in FA only: full 128-block inverse WHT before partial-row extract.
 // V slot keeps dequantize_turbo4_0 (no inverse here); graph applies output inverse once.
 template <typename type4x4>
 void dequantize_turbo4_0_k_nat(device const block_turbo4_0 * xb, short il, thread type4x4 & reg) {
-    const half norm = xb->norm;
-
-    thread half4 v[32];
-    for (int i = 0; i < 32; i++) {
-        const uint8_t qb0 = xb->qs[i * 2];
-        const uint8_t qb1 = xb->qs[i * 2 + 1];
-        v[i] = half4(
-            turbo_centroids_4bit_h[(qb0     ) & 0xF],
-            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
-            turbo_centroids_4bit_h[(qb1     ) & 0xF],
-            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
-        ) * norm;
-    }
-
-    for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
-    turbo_fwht_128_half4(v);
-    for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
-
-    const int v_base = il * 4;
-    float4x4 reg_f;
-    for (int g = 0; g < 4; g++) {
-        reg_f[g] = float4(v[v_base + g]);
-    }
-    reg = (type4x4) reg_f;
+    dequantize_turbo4_0(xb, il, reg);
 }
 
 template <typename type4>
 void dequantize_turbo4_0_t4_k_nat(device const block_turbo4_0 * xb, short il, thread type4 & reg) {
-    const half norm = xb->norm;
-
-    thread half4 v[32];
-    for (int i = 0; i < 32; i++) {
-        const uint8_t qb0 = xb->qs[i * 2];
-        const uint8_t qb1 = xb->qs[i * 2 + 1];
-        v[i] = half4(
-            turbo_centroids_4bit_h[(qb0     ) & 0xF],
-            turbo_centroids_4bit_h[(qb0 >> 4) & 0xF],
-            turbo_centroids_4bit_h[(qb1     ) & 0xF],
-            turbo_centroids_4bit_h[(qb1 >> 4) & 0xF]
-        ) * norm;
-    }
-
-    for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs2_h4[i];
-    turbo_fwht_128_half4(v);
-    for (int i = 0; i < 32; i++) v[i] *= turbo_wht_signs1_h4[i];
-
-    reg = type4(float4(v[il]));
+    dequantize_turbo4_0_t4(xb, il, reg);
 }
 
 template <typename type4x4>
@@ -10206,7 +10021,7 @@ kernel void kernel_set_rows_turbo(
 
         float x[128];
         for (int j = 0; j < 128; j++) x[j] = grp_src[j] * inv_norm;
-        turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
+        // turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
 
         // Split into 4 blocks of 32 elements each
         // All blocks store the SAME group norm — centroids are in normalized space
@@ -10293,7 +10108,7 @@ kernel void kernel_set_rows_turbo2(
 
         float x[128];
         for (int j = 0; j < 128; j++) x[j] = grp_src[j] * inv_norm;
-        turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
+        // turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
 
         float recon_norm_sq = 0.0f;
 
@@ -10365,13 +10180,11 @@ kernel void kernel_set_rows_turbo4(
         float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
 
         float x[128];
-        float normalized[128];
         for (int j = 0; j < 128; j++) {
-            normalized[j] = blk_src[j] * inv_norm;
-            x[j] = normalized[j];
+            x[j] = blk_src[j] * inv_norm;
         }
 
-        // Step 2: WHT rotate in-place - [STABILITY BYPASS 2.8]
+        // Step 2: WHT rotate — DISABLED for Natural Space stability
         // turbo_rotate_forward(x, turbo_wht_signs1, turbo_wht_signs2);
 
         // Step 3: 4-bit PolarQuant — nibble packing (2 indices per byte)
@@ -11764,4 +11577,3 @@ kernel void kernel_count_equal(
 
 typedef decltype(kernel_count_equal<int32_t>) kernel_count_equal_t;
 
-template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t kernel_count_equal<int32_t>;

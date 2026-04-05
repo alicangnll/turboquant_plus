@@ -1878,18 +1878,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
         cb(cur, LLAMA_TENSOR_NAME_FATTN, il);
 
-        // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
-        // Group size must follow V head dim / V's turbo layout (asymmetric K/V turbo uses same WHT
-        // on scores but output rows live in V's quantized domain — do not prefer K for grouping).
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const int turbo_group = (v->ne[0] % 128 == 0) ? 128 : 64;
-            if (cur->ne[0] % turbo_group == 0) {
-                if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
-                ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
-                cur = ggml_turbo_wht(ctx0, cur, 1, turbo_group, innerq_scale);  // 1 = inverse
-            }
-        }
-
         if (v_mla) {
             // Note: FA-Metal already returns [H, Q, N, B]. We can multiply directly.
             cur = ggml_mul_mat(ctx0, v_mla, cur);
@@ -2142,6 +2130,7 @@ ggml_tensor * llm_graph_context::build_attn(
     // TurboQuant pre-rotate-queries: O(d log d) WHT rotation via custom op
     // Q shape: (n_embd_head, n_head, n_tokens)
     // For zero-padded models (head_dim not 128-aligned), pad Q to match padded K dim first.
+    // TurboQuant: Queries are expected in Natural Space as dequantizers handle rotation back to natural.
     if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
         // Pad Q per-head to next multiple of 128 if needed
         if (q->ne[0] % 128 != 0) {
@@ -2149,12 +2138,6 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-        // TurboQuant: Queries must be rotated to match Rotated KV cache.
-        // Scaling via innerq_scale is applied during WHT.
-        if (true) {
-            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size from q->ne[0]
-        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2263,15 +2246,6 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-#if defined(__APPLE__)
-        const bool skip_q_fwd_wht = cparams.flash_attn && k->type == GGML_TYPE_TURBO4_0;
-#else
-        const bool skip_q_fwd_wht = false;
-#endif
-        if (!skip_q_fwd_wht) {
-            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size
-        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2377,15 +2351,6 @@ ggml_tensor * llm_graph_context::build_attn(
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
-#if defined(__APPLE__)
-        const bool skip_q_fwd_wht = cparams.flash_attn && k->type == GGML_TYPE_TURBO4_0;
-#else
-        const bool skip_q_fwd_wht = false;
-#endif
-        if (!skip_q_fwd_wht) {
-            ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-            q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);
-        }
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
