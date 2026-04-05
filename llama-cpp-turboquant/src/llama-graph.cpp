@@ -1938,17 +1938,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
         cb(kqv, "kqv", il);
 
-        // TurboQuant: inverse WHT on attention output (non-FA path)
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const int turbo_group = (v->ne[0] % 128 == 0) ? 128 : 64;
-            if (kqv->ne[0] % turbo_group == 0) {
-                if (!ggml_is_contiguous(kqv)) { kqv = ggml_cont(ctx0, kqv); }
-                // TurboQuant logic for non-FA path: Q is always rotated if skip_q_fwd_wht was false.
-                // For non-FA, we don't have the k-nat optimization usually, so assume Q was scaled.
-                ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
-                kqv = ggml_turbo_wht(ctx0, kqv, 1, turbo_group, innerq_scale);
-            }
-        }
 
         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
         if (v_mla) {
