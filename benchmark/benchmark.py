@@ -80,6 +80,12 @@ def run_benchmark(name: str, cmd: List[str], env: dict) -> Dict[str, float]:
     calc_re = re.findall(r"compute buffer total size =\s*([\d.]+)\s*MiB", output, re.IGNORECASE)
     if calc_re:
         results["llama_compute_buffer_mb"] = float(calc_re[-1])
+
+    # Parse KV buffer size reported by llama (e.g. "Metal KV buffer size = 512.00 MiB")
+    # Sum all KV buffer lines — there may be multiple (K + V split, or per-backend)
+    kv_buf_re = re.findall(r"KV buffer size\s*=\s*([\d.]+)\s*MiB", output, re.IGNORECASE)
+    if kv_buf_re:
+        results["kv_buffer_mb"] = sum(float(v) for v in kv_buf_re)
         
     if can_run_time_cmd():
         if platform.system() == "Darwin":
@@ -105,7 +111,8 @@ def print_results_table(all_results: Dict[str, Dict[str, float]], config_names: 
     metrics = [
         ("prompt_eval_tokens_per_sec", "Prefill (t/s)"),
         ("eval_tokens_per_sec", "Generation (t/s)"),
-        ("max_rss_mb", "Peak Mem (MB)")
+        ("max_rss_mb",          "Peak RSS (MB)"),
+        ("kv_buffer_mb",        "KV Cache (MiB)"),
     ]
     
     for key, display_name in metrics:
@@ -124,54 +131,89 @@ def plot_results(all_results: Dict[str, Dict[str, float]], config_names: List[st
         print("and run this benchmark again.\n")
         return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    
-    colors = ['#7f7f7f', '#2ca02c']
-    
+    # Determine if we have KV buffer data for a dedicated panel
+    has_kv_data = any(all_results[n].get('kv_buffer_mb') for n in config_names)
+    ncols = 3 if has_kv_data else 2
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols + 2, 6))
+    ax1, ax2 = axes[0], axes[1]
+    ax3 = axes[2] if has_kv_data else None
+
+    # Color palette: grey for Baseline, green for TurboTuning, blue for CPU variants
+    palette = ['#7f7f7f', '#2ca02c', '#1f77b4', '#d62728', '#9467bd']
+    colors = {name: palette[i % len(palette)] for i, name in enumerate(config_names)}
+
+    width = 0.25 if len(config_names) > 2 else 0.35
+
+    # ── Panel 1: Speed ──────────────────────────────────────────────────────────
     labels_speed = ['Prefill (t/s)', 'Generation (t/s)']
     x_speed = np.arange(len(labels_speed))
-    width = 0.35
-    
+
     for i, name in enumerate(config_names):
         speed_vals = [all_results[name].get('prompt_eval_tokens_per_sec', 0),
                       all_results[name].get('eval_tokens_per_sec', 0)]
-        offset = width * i - (width * len(config_names)/2) + width/2
-        ax1.bar(x_speed + offset, speed_vals, width, label=name, color=colors[i % len(colors)], edgecolor='black')
-        
+        offset = width * i - (width * len(config_names) / 2) + width / 2
+        bars = ax1.bar(x_speed + offset, speed_vals, width, label=name,
+                       color=colors[name], edgecolor='black')
+        for bar, val in zip(bars, speed_vals):
+            if val:
+                ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                         f'{val:.1f}', ha='center', va='bottom', fontsize=7)
+
     ax1.set_ylabel('Tokens per Second (Higher is Better)')
-    ax1.set_title('Inference Speed Comparison')
+    ax1.set_title('Inference Speed')
     ax1.set_xticks(x_speed)
     ax1.set_xticklabels(labels_speed)
-    ax1.legend()
+    ax1.legend(fontsize=8)
     ax1.grid(axis='y', linestyle='--', alpha=0.7)
-    
-    labels_mem = ['Peak System RAM (MB)']
-    x_mem = np.arange(len(labels_mem))
-    
+
+    # ── Panel 2: Peak RSS ────────────────────────────────────────────────────────
+    x_mem = np.arange(1)
     for i, name in enumerate(config_names):
         mem_val = all_results[name].get('max_rss_mb') or all_results[name].get('llama_compute_buffer_mb', 0)
-        offset = width * i - (width * len(config_names)/2) + width/2
-        ax2.bar(x_mem + offset, [mem_val], width, label=name, color=colors[i % len(colors)], edgecolor='black')
-        
-    ax2.set_ylabel('Memory in MB (Lower is Better)')
-    ax2.set_title('Memory Footprint Comparison')
+        offset = width * i - (width * len(config_names) / 2) + width / 2
+        bar = ax2.bar(x_mem + offset, [mem_val], width, label=name,
+                      color=colors[name], edgecolor='black')
+        if mem_val:
+            ax2.text(bar[0].get_x() + bar[0].get_width() / 2, mem_val + 10,
+                     f'{mem_val:.0f}', ha='center', va='bottom', fontsize=7)
+
+    ax2.set_ylabel('RSS Memory in MB (Lower is Better)')
+    ax2.set_title('Peak System RAM (RSS)\n(includes model weights — KV is a subset)')
     ax2.set_xticks(x_mem)
-    ax2.set_xticklabels(labels_mem)
-    ax2.legend()
+    ax2.set_xticklabels(['Peak RSS (MB)'])
+    ax2.legend(fontsize=8)
     ax2.grid(axis='y', linestyle='--', alpha=0.7)
-    
+
+    # ── Panel 3: KV Cache Size (only when data available) ───────────────────────
+    if ax3 is not None:
+        for i, name in enumerate(config_names):
+            kv_val = all_results[name].get('kv_buffer_mb', 0)
+            offset = width * i - (width * len(config_names) / 2) + width / 2
+            bar = ax3.bar(x_mem + offset, [kv_val], width, label=name,
+                          color=colors[name], edgecolor='black')
+            if kv_val:
+                ax3.text(bar[0].get_x() + bar[0].get_width() / 2, kv_val + 1,
+                         f'{kv_val:.1f}', ha='center', va='bottom', fontsize=7)
+
+        ax3.set_ylabel('KV Cache Size in MiB (Lower is Better)')
+        ax3.set_title('Actual KV Cache Size\n(from llama log — GPU or CPU buffer)')
+        ax3.set_xticks(x_mem)
+        ax3.set_xticklabels(['KV Cache (MiB)'])
+        ax3.legend(fontsize=8)
+        ax3.grid(axis='y', linestyle='--', alpha=0.7)
+
     plt.tight_layout()
-    
+
     basename = os.path.basename(model_path).lower()
     match = re.search(r'([\d.]+b)', basename)
     model_size = match.group(1).upper() if match else "Unknown"
     title_suffix = f" ({model_size} Model)" if model_size != "Unknown" else ""
-    
-    plt.suptitle(f'TurboTuning vs Baseline Benchmarks{title_suffix}', y=1.05, fontsize=15, fontweight='bold')
-    
+
+    plt.suptitle(f'TurboTuning vs Baseline Benchmarks{title_suffix}', y=1.02, fontsize=15, fontweight='bold')
+
     filename_size = f"_{model_size.lower()}" if model_size != "Unknown" else ""
     output_filename = f"benchmark_results{filename_size}.png"
-    
+
     plt.savefig(output_filename, bbox_inches='tight', dpi=300)
     print(f"=> Scientific benchmark graph successfully saved to: {output_filename}\n")
 
@@ -254,13 +296,36 @@ def main():
         baseline_cmd = turbo_cmd.copy()
         baseline_cmd[0] = baseline_cli
 
+        # Build CPU-mode commands (--ngl 0): KV cache stays in RAM so RSS diff is real
+        cpu_baseline_cmd = [c for c in baseline_cmd]
+        cpu_baseline_cmd_idx_ngl = next(
+            (i for i, v in enumerate(cpu_baseline_cmd) if v == "-ngl"), None
+        )
+        if cpu_baseline_cmd_idx_ngl is not None:
+            cpu_baseline_cmd[cpu_baseline_cmd_idx_ngl + 1] = "0"
+
+        cpu_turbo_cmd = [c for c in turbo_cmd]
+        cpu_turbo_cmd_idx_ngl = next(
+            (i for i, v in enumerate(cpu_turbo_cmd) if v == "-ngl"), None
+        )
+        if cpu_turbo_cmd_idx_ngl is not None:
+            cpu_turbo_cmd[cpu_turbo_cmd_idx_ngl + 1] = "0"
+
         run_configs = {
-            "Baseline": baseline_cmd,
-            "TurboTuning": turbo_cmd + [
+            # GPU-offloaded runs (fast; KV on GPU so RSS diff is small)
+            "Baseline (GPU)": baseline_cmd,
+            "TurboTuning (GPU)": turbo_cmd + [
                 "--cache-type-k", "turbo4",
                 "--cache-type-v", "turbo3",
                 "--turbo-async"
-            ]
+            ],
+            # CPU-only runs (slow; KV in RAM so we measure TRUE memory savings)
+            "Baseline (CPU)": cpu_baseline_cmd,
+            "TurboTuning (CPU)": cpu_turbo_cmd + [
+                "--cache-type-k", "turbo4",
+                "--cache-type-v", "turbo3",
+                "--turbo-async"
+            ],
         }
         
         config_names = list(run_configs.keys())
