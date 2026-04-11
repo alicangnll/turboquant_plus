@@ -152,6 +152,9 @@ For a 70B model (Q4_K_M, ~40 GB on disk):
 
 ---
 
+## Benchmark
+![Benchmark Results](benchmark/benchmark_results_8b.png)
+
 ## Quick Start
 
 ### Build

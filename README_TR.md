@@ -203,6 +203,9 @@ Demo betikleri aşağıdaki modeller için önceden yapılandırılmış profill
 
 ---
 
+## Benchmark
+![Benchmark Results](benchmark/benchmark_results_8b.png)
+
 ## Kaynakça
 
 1. Turney, T. (2026). *TurboQuant+: Extreme-Efficiency Inference Engine for Large Language Models*. GitHub repository. [https://github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus)
