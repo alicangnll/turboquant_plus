@@ -138,9 +138,25 @@ def plot_results(all_results: Dict[str, Dict[str, float]], config_names: List[st
     ax1, ax2 = axes[0], axes[1]
     ax3 = axes[2] if has_kv_data else None
 
-    # Color palette: grey for Baseline, green for TurboTuning, blue for CPU variants
-    palette = ['#7f7f7f', '#2ca02c', '#1f77b4', '#d62728', '#9467bd']
-    colors = {name: palette[i % len(palette)] for i, name in enumerate(config_names)}
+    # Color palette — LLMTuning is the hero (green), Baseline is neutral grey,
+    # TurboTuning Full gets deep blue to show the combined stack effect.
+    # CPU variants use lighter tints of the same hues for visual grouping.
+    HERO_COLORS = {
+        # GPU / primary runs
+        "Baseline":           "#7f7f7f",   # neutral grey
+        "Baseline (GPU)":     "#7f7f7f",
+        "LLMTuning Only":     "#2ca02c",   # hero green  ← centre of attention
+        "LLMTuning (GPU)":    "#2ca02c",
+        "TurboTuning Full":   "#1f77b4",   # deep blue (baseline + LLMTuning + TQ)
+        "TurboTuning (GPU)":  "#1f77b4",
+        # CPU variants — lighter tints
+        "Baseline (CPU)":     "#aec7e8",
+        "LLMTuning (CPU)":    "#98df8a",   # light green
+        "TurboTuning (CPU)":  "#6baed6",
+    }
+    palette_fallback = ['#7f7f7f', '#2ca02c', '#1f77b4', '#d62728', '#9467bd']
+    colors = {name: HERO_COLORS.get(name, palette_fallback[i % len(palette_fallback)])
+              for i, name in enumerate(config_names)}
 
     width = 0.25 if len(config_names) > 2 else 0.35
 
@@ -209,7 +225,7 @@ def plot_results(all_results: Dict[str, Dict[str, float]], config_names: List[st
     model_size = match.group(1).upper() if match else "Unknown"
     title_suffix = f" ({model_size} Model)" if model_size != "Unknown" else ""
 
-    plt.suptitle(f'TurboTuning vs Baseline Benchmarks{title_suffix}', y=1.02, fontsize=15, fontweight='bold')
+    plt.suptitle(f'LLMTuning — Performance & Memory Analysis{title_suffix}', y=1.02, fontsize=15, fontweight='bold')
 
     filename_size = f"_{model_size.lower()}" if model_size != "Unknown" else ""
     output_filename = f"benchmark_results{filename_size}.png"
@@ -218,8 +234,17 @@ def plot_results(all_results: Dict[str, Dict[str, float]], config_names: List[st
     print(f"=> Scientific benchmark graph successfully saved to: {output_filename}\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="TurboTuning Modular Benchmark")
-    
+    parser = argparse.ArgumentParser(
+        description="TurboTuning / LLMTuning Modular Benchmark",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes:
+  gpu        Baseline vs LLMTuning-only vs TurboTuning (GPU, fast)
+  cpu        Baseline vs LLMTuning-only vs TurboTuning (CPU, shows true RAM savings)
+  full       All 6 scenarios: GPU + CPU variants
+  llmtuning  Baseline vs LLMTuning (async pipeline only, no KV compress) vs TurboTuning
+"""
+    )
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
     default_cli = os.path.join(project_root, "llama-cpp-turboquant", "build", "bin", "llama-cli")
@@ -233,6 +258,13 @@ def main():
     parser.add_argument("--threads", type=int, default=os.cpu_count() or 4, help="Number of threads")
     parser.add_argument("--ngl", type=int, default=99, help="Number of GPU layers (for offloading)")
     parser.add_argument("--llama-cli", type=str, default=default_cli, help="Path to llama-cli executable")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["gpu", "cpu", "full", "llmtuning"],
+        default="llmtuning",
+        help="Benchmark mode (default: llmtuning — isolates LLMTuning contribution)"
+    )
     
     args = parser.parse_args()
     
@@ -296,37 +328,58 @@ def main():
         baseline_cmd = turbo_cmd.copy()
         baseline_cmd[0] = baseline_cli
 
-        # Build CPU-mode commands (--ngl 0): KV cache stays in RAM so RSS diff is real
-        cpu_baseline_cmd = [c for c in baseline_cmd]
-        cpu_baseline_cmd_idx_ngl = next(
-            (i for i, v in enumerate(cpu_baseline_cmd) if v == "-ngl"), None
-        )
-        if cpu_baseline_cmd_idx_ngl is not None:
-            cpu_baseline_cmd[cpu_baseline_cmd_idx_ngl + 1] = "0"
+        # ── Helper: swap --ngl value in a command list ─────────────────────────
+        def set_ngl(cmd: list, ngl_val: str) -> list:
+            out = list(cmd)
+            idx = next((i for i, v in enumerate(out) if v == "-ngl"), None)
+            if idx is not None:
+                out[idx + 1] = ngl_val
+            return out
 
-        cpu_turbo_cmd = [c for c in turbo_cmd]
-        cpu_turbo_cmd_idx_ngl = next(
-            (i for i, v in enumerate(cpu_turbo_cmd) if v == "-ngl"), None
-        )
-        if cpu_turbo_cmd_idx_ngl is not None:
-            cpu_turbo_cmd[cpu_turbo_cmd_idx_ngl + 1] = "0"
+        baseline_gpu = baseline_cmd
+        baseline_cpu = set_ngl(baseline_cmd, "0")
+        turbo_full_gpu = turbo_cmd + ["--cache-type-k", "turbo4", "--cache-type-v", "turbo3", "--turbo-async"]
+        turbo_full_cpu = set_ngl(turbo_cmd, "0") + ["--cache-type-k", "turbo4", "--cache-type-v", "turbo3", "--turbo-async"]
+        # LLMTuning-only: async 3-stage pipeline active, but NO KV compression
+        # (f16 cache, only --turbo-async) — isolates the weight-virtualisation gain
+        llmtuning_only_gpu = turbo_cmd + ["--turbo-async"]
+        llmtuning_only_cpu = set_ngl(turbo_cmd, "0") + ["--turbo-async"]
 
-        run_configs = {
-            # GPU-offloaded runs (fast; KV on GPU so RSS diff is small)
-            "Baseline (GPU)": baseline_cmd,
-            "TurboTuning (GPU)": turbo_cmd + [
-                "--cache-type-k", "turbo4",
-                "--cache-type-v", "turbo3",
-                "--turbo-async"
-            ],
-            # CPU-only runs (slow; KV in RAM so we measure TRUE memory savings)
-            "Baseline (CPU)": cpu_baseline_cmd,
-            "TurboTuning (CPU)": cpu_turbo_cmd + [
-                "--cache-type-k", "turbo4",
-                "--cache-type-v", "turbo3",
-                "--turbo-async"
-            ],
-        }
+        MODE = args.mode
+
+        if MODE == "llmtuning":
+            # Primary mode: isolate LLMTuning contribution (default)
+            print("\n[Mode: llmtuning] Baseline → LLMTuning Only → TurboTuning Full")
+            print("        Highlights: async 3-stage pipeline (LLMTuning) + KV compression (TurboQuant)\n")
+            run_configs = {
+                "Baseline":           baseline_gpu,
+                "LLMTuning Only":     llmtuning_only_gpu,
+                "TurboTuning Full":   turbo_full_gpu,
+            }
+        elif MODE == "gpu":
+            print("\n[Mode: gpu] GPU-offloaded runs only\n")
+            run_configs = {
+                "Baseline (GPU)":       baseline_gpu,
+                "LLMTuning (GPU)":      llmtuning_only_gpu,
+                "TurboTuning (GPU)":    turbo_full_gpu,
+            }
+        elif MODE == "cpu":
+            print("\n[Mode: cpu] CPU-only runs — KV cache stays in RAM (true RAM savings visible)\n")
+            run_configs = {
+                "Baseline (CPU)":       baseline_cpu,
+                "LLMTuning (CPU)":      llmtuning_only_cpu,
+                "TurboTuning (CPU)":    turbo_full_cpu,
+            }
+        else:  # full
+            print("\n[Mode: full] All 6 scenarios: GPU + CPU variants\n")
+            run_configs = {
+                "Baseline (GPU)":       baseline_gpu,
+                "LLMTuning (GPU)":      llmtuning_only_gpu,
+                "TurboTuning (GPU)":    turbo_full_gpu,
+                "Baseline (CPU)":       baseline_cpu,
+                "LLMTuning (CPU)":      llmtuning_only_cpu,
+                "TurboTuning (CPU)":    turbo_full_cpu,
+            }
         
         config_names = list(run_configs.keys())
         all_results = {}
