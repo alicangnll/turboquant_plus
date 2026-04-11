@@ -363,7 +363,7 @@ llama_context::llama_context(
         }
     }
 
-    bool use_async = params.turbo_async || 
+    bool use_async = params.turbo_async ||
                      params.type_k == GGML_TYPE_TURBO2_0 || params.type_k == GGML_TYPE_TURBO3_0 || params.type_k == GGML_TYPE_TURBO4_0 ||
                      params.type_v == GGML_TYPE_TURBO2_0 || params.type_v == GGML_TYPE_TURBO3_0 || params.type_v == GGML_TYPE_TURBO4_0;
     if (!use_async) {
@@ -372,6 +372,27 @@ llama_context::llama_context(
             use_async = true;
         }
     }
+
+    // Fix 2: If ALL model layer weights are on GPU (non-host) buffers, the CPU async
+    // pipeline (prefetch/unload/compress) does nothing useful — every tensor check in
+    // llama_unload_tensor / llama_prefetch_tensor returns early because Metal/CUDA
+    // buffers are not host-accessible.  Instantiating tuning_session in this case
+    // adds overhead (eval callback, thread startup, TQR I/O) with zero benefit.
+    // We detect this by probing the first available layer weight tensor.
+    if (use_async && !model.layers.empty()) {
+        const struct ggml_tensor * probe = nullptr;
+        for (const auto & layer : model.layers) {
+            if (layer.wq)   { probe = layer.wq;   break; }
+            if (layer.wqkv) { probe = layer.wqkv; break; }
+            if (layer.wk)   { probe = layer.wk;   break; }
+        }
+        if (probe && probe->buffer && !ggml_backend_buffer_is_host(probe->buffer)) {
+            LLAMA_LOG_INFO("%s: TurboQuant: All layer weights are on GPU — "
+                           "skipping CPU async pipeline (no RAM to manage).\n", __func__);
+            use_async = false;
+        }
+    }
+
     if (use_async && !model.hparams.no_alloc) {
         LLAMA_LOG_INFO("%s: TurboQuant: Initializing async 3-stage pipeline...\n", __func__);
         tuning_session = std::make_unique<llama_tuning_session>(*this);
@@ -3729,8 +3750,12 @@ bool llama_context::tuning_eval_callback(struct ggml_tensor * t, bool ask, void 
     auto * ctx = (llama_context *) user_data;
     if (ask) return true; // PRE-OP: Continue
 
-    // POST-OP: Sub-layer or Layer finished?
-    if (ctx->tuning_session && ctx->n_queued_tokens > 1) {
+    // Fast-path: during generation (single token) there is nothing to pipeline.
+    // Skip all map lookups — avoids ~6400 std::map::find() calls per forward pass.
+    if (!ctx->tuning_session || ctx->n_queued_tokens <= 1) return true;
+
+    // POST-OP: Sub-layer or Layer finished? (prefill / multi-token batches only)
+    if (true) {
         // [PULSE PHASE 1] End of Attention
         auto it_attn = ctx->attn_ends.find(t);
         if (it_attn != ctx->attn_ends.end()) {

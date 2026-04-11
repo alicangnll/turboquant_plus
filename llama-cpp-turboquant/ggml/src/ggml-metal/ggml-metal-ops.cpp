@@ -1690,8 +1690,13 @@ int ggml_metal_op_turbo_wht(ggml_metal_op_t ctx, int idx) {
     // Buffer 3 must always be bound; ignored in shader when has_scale == 0.
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(has_scale ? scale : op->src[0]), ida++);
 
-    // One thread per WHT group
-    const int threads_per_tg = 256;
+    // For single-token generation, n_groups is often very small (e.g., 8 for LLaMA-3.1 8B).
+    // Launching 256 threads for 8 groups wastes GPU occupancy and increases scheduler latency.
+    // Clamp to a power-of-two >= SIMD width (32) for correct execution, but scale to workload.
+    int threads_per_tg = 32; // minimum SIMD width for Metal
+    while (threads_per_tg < (int) n_groups && threads_per_tg < 256) {
+        threads_per_tg *= 2;
+    }
     const int n_threadgroups = (int) ((n_groups + threads_per_tg - 1) / threads_per_tg);
     ggml_metal_encoder_dispatch_threadgroups(enc, n_threadgroups, 1, 1, threads_per_tg, 1, 1);
 
@@ -2546,29 +2551,28 @@ bool ggml_metal_op_flash_attn_ext_use_vec(const ggml_tensor * op) {
     const int64_t ne00 = op->src[0]->ne[0]; // head size
     const int64_t ne01 = op->src[0]->ne[1]; // batch size
 
-    // Mixed K/V types (e.g. turbo4 K + turbo2 V, q8 K + turbo V): vec FA templates
-    // were validated mainly for symmetric KV; use the non-vec path for correctness.
-    if (op->src[1]->type != op->src[2]->type) {
+    // Allow TURBO_FORCE_NONVEC=1 to override completely (for debugging)
+    const char * force_nonvec = getenv("TURBO_FORCE_NONVEC");
+    if (force_nonvec && force_nonvec[0] == '1') {
         return false;
     }
 
+    const ggml_type ktype = op->src[1]->type;
     const ggml_type vtype = op->src[2]->type;
-    if (vtype == GGML_TYPE_TURBO2_0 || vtype == GGML_TYPE_TURBO3_0 || vtype == GGML_TYPE_TURBO4_0) {
-        return false;  // prefer non-vec for all-turbo V (symmetric turbo4+4 included)
+
+    const bool k_is_turbo = (ktype == GGML_TYPE_TURBO2_0 || ktype == GGML_TYPE_TURBO3_0 || ktype == GGML_TYPE_TURBO4_0);
+    const bool v_is_turbo = (vtype == GGML_TYPE_TURBO2_0 || vtype == GGML_TYPE_TURBO3_0 || vtype == GGML_TYPE_TURBO4_0);
+
+    // For turbo types: only use the vec kernel when:
+    //   - Both K and V are turbo (mixed tuples like turbo4+turbo3 have dedicated vec kernels)
+    //   - batch size is small (ne01 < 20, which is always true for generation)
+    //   - head size is 32-aligned
+    // Non-vec path is forced when V is turbo but K is not (no vec kernel for that combo).
+    if (v_is_turbo && !k_is_turbo) {
+        return false;  // no vec kernel for non-turbo K + turbo V
     }
 
     // use vec kernel if the batch size is small and if the head size is supported
-    // EXPERIMENT: force non-vec for turbo3 on pre-M5 hardware.
-    // The vec kernel uses nl=8 (4 elements per dequant call) which has 4x more
-    // loop iterations than the non-vec nl=2 path. On M2 Pro, this loop overhead
-    // dominates — the non-vec path may be faster even for batch=1.
-    const ggml_type ktype = op->src[1]->type;
-    if (ktype == GGML_TYPE_TURBO2_0 || ktype == GGML_TYPE_TURBO3_0 || ktype == GGML_TYPE_TURBO4_0) {
-        const char * force_nonvec = getenv("TURBO_FORCE_NONVEC");
-        if (force_nonvec && force_nonvec[0] == '1') {
-            return false;  // force non-vec path
-        }
-    }
     return (ne01 < 20) && (ne00 % 32 == 0);
 }
 
